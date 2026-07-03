@@ -1,0 +1,16 @@
+{
+  "name": "company-drawio-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal company wrapper server for draw.io.",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check scripts/status.js && node --check scripts/backup-data.js && node --check scripts/check-html.js && node scripts/check-html.js",
+    "test": "node --test server.test.js",
+    "status": "node scripts/status.js",
+    "backup": "node scripts/backup-data.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

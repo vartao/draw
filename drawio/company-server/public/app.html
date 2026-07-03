@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>我的图纸 - 公司画图工具</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/company.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/images/drawlogo.svg" alt="">
+        <div>
+          <h1>我的图纸</h1>
+          <div id="whoami" class="subtle"></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="refreshButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>刷新</span></button>
+        <button id="newButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">+</span><span>新建图纸</span></button>
+        <button id="logoutButton" type="button"><span class="btn-icon" aria-hidden="true">↪</span><span>退出</span></button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>文件列表</h2>
+          <div id="status" class="status"></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>更新时间</th>
+                <th>大小</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="fileRows"></tbody>
+          </table>
+          <div id="emptyState" class="empty hidden">
+            <div class="empty-mark" aria-hidden="true">+</div>
+            <strong>还没有图纸</strong>
+            <span>新建一张图纸开始工作。</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/dialog.js"></script>
+  <script>
+    (function () {
+      var whoami = document.getElementById('whoami');
+      var rows = document.getElementById('fileRows');
+      var emptyState = document.getElementById('emptyState');
+      var status = document.getElementById('status');
+      var refreshButton = document.getElementById('refreshButton');
+      var newButton = document.getElementById('newButton');
+      var logoutButton = document.getElementById('logoutButton');
+
+      function setStatus(text, tone) {
+        status.textContent = text || '';
+        status.className = 'status' + (tone ? ' ' + tone : '');
+      }
+
+      function notify(text, tone) {
+        if (window.CompanyToast) {
+          CompanyToast.show({ message: text, tone: tone });
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value).replace(/[&<>"']/g, function (ch) {
+          return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+        });
+      }
+
+      function formatBytes(value) {
+        var size = Number(value || 0);
+
+        if (size < 1024) {
+          return size + ' B';
+        }
+
+        if (size < 1024 * 1024) {
+          return (size / 1024).toFixed(1) + ' KB';
+        }
+
+        return (size / 1024 / 1024).toFixed(1) + ' MB';
+      }
+
+      function formatDate(value) {
+        if (!value) {
+          return '-';
+        }
+
+        return new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        }).format(new Date(value));
+      }
+
+      function api(path, options) {
+        return fetch(path, Object.assign({
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }
+        }, options || {})).then(function (res) {
+          if (res.status === 401) {
+            window.location.replace('/login.html?next=' + encodeURIComponent(window.location.pathname + window.location.search));
+            return Promise.reject({ error: 'not_authenticated' });
+          }
+
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw body;
+            }
+
+            return body;
+          });
+        });
+      }
+
+      function render(files) {
+        rows.innerHTML = '';
+        emptyState.classList.toggle('hidden', files.length > 0);
+
+        files.forEach(function (file) {
+          var tr = document.createElement('tr');
+          tr.innerHTML = [
+            '<td class="name-cell"><strong>' + escapeHtml(file.name) + '</strong></td>',
+            '<td>' + escapeHtml(formatDate(file.updatedAt)) + '</td>',
+            '<td>' + escapeHtml(formatBytes(file.size)) + '</td>',
+            '<td><div class="row-actions">',
+            '<button type="button" data-action="open"><span class="btn-icon" aria-hidden="true">↗</span><span>打开</span></button>',
+            '<button type="button" data-action="rename"><span class="btn-icon" aria-hidden="true">✎</span><span>重命名</span></button>',
+            '<button type="button" data-action="share"><span class="btn-icon" aria-hidden="true">⛓</span><span>分享</span></button>',
+            '<button type="button" data-action="download"><span class="btn-icon" aria-hidden="true">↓</span><span>下载</span></button>',
+            '<button class="danger" type="button" data-action="delete"><span class="btn-icon" aria-hidden="true">×</span><span>删除</span></button>',
+            '</div></td>'
+          ].join('');
+          tr.querySelector('[data-action="open"]').addEventListener('click', function () {
+            window.location.href = '/editor.html?id=' + encodeURIComponent(file.id);
+          });
+          tr.querySelector('[data-action="rename"]').addEventListener('click', function () {
+            renameFile(file);
+          });
+          tr.querySelector('[data-action="share"]').addEventListener('click', function () {
+            shareFile(file);
+          });
+          tr.querySelector('[data-action="download"]').addEventListener('click', function () {
+            downloadFile(file);
+          });
+          tr.querySelector('[data-action="delete"]').addEventListener('click', function () {
+            deleteFile(file);
+          });
+          rows.appendChild(tr);
+        });
+      }
+
+      function loadFiles() {
+        setStatus('正在加载');
+        refreshButton.disabled = true;
+
+        return api('/api/files')
+          .then(function (body) {
+            render(body.files || []);
+            setStatus((body.files || []).length + ' 个文件', 'ok');
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              setStatus('文件列表加载失败', 'error');
+            }
+          })
+          .finally(function () {
+            refreshButton.disabled = false;
+          });
+      }
+
+      function createFile() {
+        CompanyDialog.prompt({
+          title: '新建图纸',
+          label: '文件名',
+          value: '未命名图纸.drawio',
+          confirmText: '创建',
+          requiredText: '请输入文件名'
+        }).then(function (name) {
+          if (name == null) {
+            return;
+          }
+
+          setStatus('正在创建');
+          newButton.disabled = true;
+
+          api('/api/files', {
+            method: 'POST',
+            body: JSON.stringify({ name: name })
+          })
+            .then(function (body) {
+              window.location.href = '/editor.html?id=' + encodeURIComponent(body.file.id);
+            })
+            .catch(function () {
+              setStatus('创建失败', 'error');
+              notify('创建失败，请稍后重试。', 'error');
+            })
+            .finally(function () {
+              newButton.disabled = false;
+            });
+          });
+      }
+
+      function renameFile(file) {
+        CompanyDialog.prompt({
+          title: '重命名图纸',
+          label: '新文件名',
+          value: file.name,
+          confirmText: '保存',
+          requiredText: '请输入新文件名'
+        }).then(function (name) {
+          if (name == null) {
+            return;
+          }
+
+          api('/api/files/' + encodeURIComponent(file.id) + '/rename', {
+            method: 'POST',
+            body: JSON.stringify({ name: name })
+          })
+            .then(function () {
+              setStatus('已重命名', 'ok');
+              notify('文件名已更新。', 'ok');
+              return loadFiles();
+            })
+            .catch(function () {
+              setStatus('重命名失败', 'error');
+              notify('重命名失败，请稍后重试。', 'error');
+            });
+          });
+      }
+
+      function shareFile(file) {
+        api('/api/files/' + encodeURIComponent(file.id) + '/share', {
+          method: 'POST',
+          body: JSON.stringify({})
+        })
+          .then(function (body) {
+            var url = body.url;
+            setStatus('分享链接已生成', 'ok');
+            notify('分享链接已生成。', 'ok');
+
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(url).catch(function () {});
+            }
+
+            CompanyDialog.share({
+              title: '分享链接已生成',
+              message: '链接为只读访问，可直接复制发送。',
+              label: file.name,
+              value: url,
+              confirmText: '完成'
+            });
+          })
+          .catch(function () {
+            setStatus('分享失败', 'error');
+            notify('分享失败，请稍后重试。', 'error');
+          });
+      }
+
+      function downloadFile(file) {
+        var a = document.createElement('a');
+        a.href = '/api/files/' + encodeURIComponent(file.id) + '/download';
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+
+      function deleteFile(file) {
+        CompanyDialog.confirm({
+          title: '删除图纸',
+          message: '确定删除“' + file.name + '”？',
+          confirmText: '删除',
+          cancelText: '保留',
+          danger: true
+        }).then(function (confirmed) {
+          if (!confirmed) {
+            return;
+          }
+
+          api('/api/files/' + encodeURIComponent(file.id), { method: 'DELETE' })
+            .then(function () {
+              setStatus('已删除', 'ok');
+              notify('图纸已删除。', 'ok');
+              return loadFiles();
+            })
+            .catch(function () {
+              setStatus('删除失败', 'error');
+              notify('删除失败，请稍后重试。', 'error');
+            });
+          });
+      }
+
+      function logout() {
+        CompanyDialog.confirm({
+          title: '退出登录',
+          message: '确定退出当前账号？',
+          confirmText: '退出',
+          cancelText: '取消'
+        }).then(function (confirmed) {
+          if (!confirmed) {
+            return;
+          }
+
+          api('/api/logout', { method: 'POST', body: JSON.stringify({}) })
+            .finally(function () {
+              window.location.replace('/login.html');
+            });
+          });
+      }
+
+      api('/api/me')
+        .then(function (body) {
+          if (!body.authenticated) {
+            window.location.replace('/login.html?next=' + encodeURIComponent('/app.html'));
+            return;
+          }
+
+          whoami.textContent = '工号 ' + body.employeeId;
+          loadFiles();
+        })
+        .catch(function () {});
+
+      refreshButton.addEventListener('click', loadFiles);
+      newButton.addEventListener('click', createFile);
+      logoutButton.addEventListener('click', logout);
+    }());
+  </script>
+</body>
+</html>

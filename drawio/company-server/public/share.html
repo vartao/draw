@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>只读分享 - 公司画图工具</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/company.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/images/drawlogo.svg" alt="">
+        <div>
+          <h1 id="title">只读分享</h1>
+          <div id="meta" class="subtle"></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="downloadButton" type="button"><span class="btn-icon" aria-hidden="true">↓</span><span>下载 XML</span></button>
+        <span id="status" class="status"></span>
+      </div>
+    </header>
+
+    <main class="share-view">
+      <div id="viewer" class="viewer-box">
+        <div class="empty">正在加载</div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var token = params.get('token');
+      var title = document.getElementById('title');
+      var meta = document.getElementById('meta');
+      var status = document.getElementById('status');
+      var viewer = document.getElementById('viewer');
+      var downloadButton = document.getElementById('downloadButton');
+      var state = null;
+
+      function setStatus(text, tone) {
+        status.textContent = text || '';
+        status.className = 'status' + (tone ? ' ' + tone : '');
+      }
+
+      function formatDate(value) {
+        return new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        }).format(new Date(value));
+      }
+
+      function loadViewer(xml) {
+        viewer.innerHTML = '';
+
+        window.PROXY_URL = '';
+        window.STYLE_PATH = '/styles';
+        window.SHAPES_PATH = '/shapes';
+        window.STENCIL_PATH = '/stencils';
+        window.DRAW_MATH_URL = '/math4/es5';
+        window.GRAPH_IMAGE_PATH = '/img';
+        window.mxImageBasePath = '/mxgraph/images';
+        window.mxBasePath = '/mxgraph/';
+        window.DRAWIO_BASE_URL = '/';
+
+        var graph = document.createElement('div');
+        graph.className = 'mxgraph';
+        graph.style.maxWidth = '100%';
+        graph.style.minHeight = '68vh';
+        graph.setAttribute('data-mxgraph', JSON.stringify({
+          xml: xml,
+          toolbar: 'zoom layers lightbox',
+          nav: true,
+          resize: true,
+          border: 8,
+          'auto-fit': true,
+          'auto-origin': true
+        }));
+        viewer.appendChild(graph);
+
+        var script = document.createElement('script');
+        script.src = '/js/viewer-static.min.js';
+        script.async = true;
+        document.body.appendChild(script);
+      }
+
+      function downloadXml() {
+        if (!state) {
+          return;
+        }
+
+        var a = document.createElement('a');
+        a.href = '/api/share/' + encodeURIComponent(token) + '/download';
+        a.download = state.file.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+
+      if (!token) {
+        viewer.innerHTML = '<div class="empty">分享链接无效。</div>';
+        setStatus('缺少 token', 'error');
+        return;
+      }
+
+      fetch('/api/share/' + encodeURIComponent(token), { credentials: 'same-origin' })
+        .then(function (res) {
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw body;
+            }
+
+            return body;
+          });
+        })
+        .then(function (body) {
+          state = body;
+          title.textContent = body.file.name;
+          meta.textContent = '只读 · 更新于 ' + formatDate(body.file.updatedAt);
+          document.title = body.file.name + ' - 只读分享';
+          setStatus('只读', 'ok');
+          loadViewer(body.xml);
+        })
+        .catch(function (err) {
+          if (err && err.error === 'share_expired') {
+            viewer.innerHTML = '<div class="empty">分享链接已过期。</div>';
+            setStatus('已过期', 'error');
+          } else {
+            viewer.innerHTML = '<div class="empty">分享链接不可用。</div>';
+            setStatus('不可用', 'error');
+          }
+        });
+
+      downloadButton.addEventListener('click', downloadXml);
+    }());
+  </script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>公司画图工具</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/company.css">
+</head>
+<body class="login-page">
+  <main class="login-shell" aria-label="公司画图工具登录">
+    <section class="login-visual" aria-hidden="true">
+      <div class="login-wordmark">
+        <img src="/images/drawlogo.svg" alt="">
+        <div>
+          <span>Company Draw</span>
+          <strong>公司画图工具</strong>
+        </div>
+      </div>
+      <div class="blueprint">
+        <div class="blueprint-node node-start">流程</div>
+        <div class="blueprint-node node-system">系统</div>
+        <div class="blueprint-node node-api">接口</div>
+        <div class="blueprint-node node-data">数据</div>
+        <div class="blueprint-line line-a"></div>
+        <div class="blueprint-line line-b"></div>
+        <div class="blueprint-line line-c"></div>
+        <div class="blueprint-dot dot-a"></div>
+        <div class="blueprint-dot dot-b"></div>
+      </div>
+      <div class="login-caption">
+        <span>内部版</span>
+        <span>安全登录</span>
+      </div>
+    </section>
+
+    <section class="panel login-card">
+      <div class="login-card-header">
+        <span class="eyebrow">Welcome back</span>
+        <h1>工号登录</h1>
+        <p>进入你的图纸工作台</p>
+      </div>
+      <form id="loginForm" autocomplete="on">
+        <label class="field" for="employeeId">
+          <span class="field-label">工号</span>
+          <span class="input-wrap">
+            <span class="input-icon" aria-hidden="true">ID</span>
+            <input id="employeeId" name="employeeId" autocomplete="username" autofocus required>
+          </span>
+        </label>
+        <label class="field" for="password">
+          <span class="field-label">密码</span>
+          <span class="input-wrap">
+            <span class="input-icon" aria-hidden="true">#</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+          </span>
+        </label>
+        <button id="submitButton" class="primary full login-submit" type="submit">
+          <span class="btn-icon" aria-hidden="true">→</span>
+          <span class="button-label">登录</span>
+        </button>
+        <div id="message" class="status error login-message" role="alert"></div>
+      </form>
+    </section>
+  </main>
+  <script>
+    (function () {
+      var form = document.getElementById('loginForm');
+      var employeeId = document.getElementById('employeeId');
+      var password = document.getElementById('password');
+      var button = document.getElementById('submitButton');
+      var message = document.getElementById('message');
+      var params = new URLSearchParams(window.location.search);
+      var next = params.get('next') || '/app.html';
+
+      function safeNext(value) {
+        try {
+          var url = new URL(value, window.location.origin);
+
+          if (url.origin === window.location.origin) {
+            return url.pathname + url.search + url.hash;
+          }
+        } catch (e) {}
+
+        return '/app.html';
+      }
+
+      function setMessage(text) {
+        message.textContent = text || '';
+      }
+
+      function setBusy(isBusy) {
+        button.disabled = isBusy;
+        button.classList.toggle('is-loading', isBusy);
+        button.querySelector('.button-label').textContent = isBusy ? '登录中' : '登录';
+      }
+
+      fetch('/api/me', { credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (session) {
+          if (session && session.authenticated) {
+            window.location.replace(safeNext(next));
+          }
+        })
+        .catch(function () {});
+
+      form.addEventListener('submit', function (evt) {
+        evt.preventDefault();
+        setMessage('');
+        setBusy(true);
+
+        fetch('/api/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            employeeId: employeeId.value.trim(),
+            password: password.value
+          })
+        })
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) {
+                throw body;
+              }
+
+              return body;
+            });
+          })
+          .then(function () {
+            window.location.replace(safeNext(next));
+          })
+          .catch(function (err) {
+            if (err && err.error === 'invalid_employee_id') {
+              setMessage('工号只能包含字母、数字、下划线或短横线。');
+            } else if (err && err.error === 'invalid_credentials') {
+              setMessage('工号或密码不正确。');
+            } else {
+              setMessage('登录失败，请稍后重试。');
+            }
+          })
+          .finally(function () {
+            setBusy(false);
+          });
+      });
+    }());
+  </script>
+</body>
+</html>

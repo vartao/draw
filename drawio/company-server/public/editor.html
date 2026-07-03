@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>编辑图纸 - 公司画图工具</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/company.css">
+</head>
+<body>
+  <div class="editor-shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/images/drawlogo.svg" alt="">
+        <div>
+          <h1 id="title">编辑图纸</h1>
+          <div id="meta" class="subtle"></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="backButton" type="button"><span class="btn-icon" aria-hidden="true">‹</span><span>返回</span></button>
+        <button id="renameButton" type="button"><span class="btn-icon" aria-hidden="true">✎</span><span>重命名</span></button>
+        <button id="shareButton" type="button"><span class="btn-icon" aria-hidden="true">⛓</span><span>分享</span></button>
+        <button id="exportPngButton" type="button"><span class="btn-icon" aria-hidden="true">▣</span><span>导出 PNG</span></button>
+        <button id="exportSvgButton" type="button"><span class="btn-icon" aria-hidden="true">◇</span><span>导出 SVG</span></button>
+        <button id="downloadButton" type="button"><span class="btn-icon" aria-hidden="true">↓</span><span>下载 XML</span></button>
+        <button id="saveButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">✓</span><span>保存</span></button>
+        <span id="status" class="status"></span>
+      </div>
+    </header>
+    <iframe id="drawioFrame" class="editor-frame" title="draw.io editor"></iframe>
+  </div>
+
+  <script src="/dialog.js"></script>
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var fileId = params.get('id');
+      var frame = document.getElementById('drawioFrame');
+      var title = document.getElementById('title');
+      var meta = document.getElementById('meta');
+      var status = document.getElementById('status');
+      var backButton = document.getElementById('backButton');
+      var renameButton = document.getElementById('renameButton');
+      var shareButton = document.getElementById('shareButton');
+      var exportPngButton = document.getElementById('exportPngButton');
+      var exportSvgButton = document.getElementById('exportSvgButton');
+      var downloadButton = document.getElementById('downloadButton');
+      var saveButton = document.getElementById('saveButton');
+
+      var file = null;
+      var xml = '';
+      var frameReady = false;
+      var saving = false;
+      var queuedXml = null;
+
+      function setStatus(text, tone) {
+        status.textContent = text || '';
+        status.className = 'status' + (tone ? ' ' + tone : '');
+      }
+
+      function notify(text, tone) {
+        if (window.CompanyToast) {
+          CompanyToast.show({ message: text, tone: tone });
+        }
+      }
+
+      function api(path, options) {
+        return fetch(path, Object.assign({
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }
+        }, options || {})).then(function (res) {
+          if (res.status === 401) {
+            window.location.replace('/login.html?next=' + encodeURIComponent(window.location.pathname + window.location.search));
+            return Promise.reject({ error: 'not_authenticated' });
+          }
+
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw body;
+            }
+
+            return body;
+          });
+        });
+      }
+
+      function formatDate(value) {
+        return new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        }).format(new Date(value));
+      }
+
+      function fileNameWithExtension(extension) {
+        var name = file && file.name ? file.name : 'diagram.drawio';
+        return name.replace(/\.drawio$/i, '') + extension;
+      }
+
+      function triggerDownload(href, filename) {
+        var a = document.createElement('a');
+        a.href = href;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+
+      function downloadText(text, filename, mimeType) {
+        var blob = new Blob([text], { type: mimeType });
+        var url = URL.createObjectURL(blob);
+        triggerDownload(url, filename);
+        URL.revokeObjectURL(url);
+      }
+
+      function updateHeader() {
+        title.textContent = file ? file.name : '编辑图纸';
+        meta.textContent = file ? '最后保存 ' + formatDate(file.updatedAt) : '';
+        document.title = (file ? file.name : '编辑图纸') + ' - 公司画图工具';
+      }
+
+      function postToEditor(message) {
+        if (frame.contentWindow) {
+          frame.contentWindow.postMessage(JSON.stringify(message), '*');
+        }
+      }
+
+      function sendLoad() {
+        if (!file || !frameReady) {
+          return;
+        }
+
+        postToEditor({
+          action: 'load',
+          xml: xml,
+          title: file.name,
+          autosave: 1,
+          saveAndExit: 0,
+          noExitBtn: 1,
+          modified: 'unsavedChanges'
+        });
+      }
+
+      function saveXml(nextXml, isAuto) {
+        if (!nextXml) {
+          return Promise.resolve();
+        }
+
+        if (saving) {
+          queuedXml = nextXml;
+          return Promise.resolve();
+        }
+
+        saving = true;
+        saveButton.disabled = true;
+        setStatus(isAuto ? '自动保存中' : '保存中');
+
+        return api('/api/files/' + encodeURIComponent(file.id), {
+          method: 'PUT',
+          body: JSON.stringify({ xml: nextXml, etag: file.etag })
+        })
+          .then(function (body) {
+            file = body.file;
+            xml = nextXml;
+            updateHeader();
+            setStatus('已保存', 'ok');
+            if (!isAuto) {
+              notify('图纸已保存。', 'ok');
+            }
+            postToEditor({ action: 'status', message: '已保存', modified: false });
+          })
+          .catch(function (err) {
+            if (err && err.error === 'file_conflict') {
+              setStatus('保存冲突，请刷新后另存', 'error');
+              notify('保存冲突，请刷新后再处理。', 'error');
+              postToEditor({
+                action: 'dialog',
+                title: '保存冲突',
+                message: '服务器上的文件已经被其他页面更新。请返回文件列表重新打开，或复制当前内容后另存。',
+                button: '知道了',
+                modified: true
+              });
+            } else if (!err || err.error !== 'not_authenticated') {
+              setStatus('保存失败', 'error');
+              notify('保存失败，请稍后重试。', 'error');
+              postToEditor({ action: 'status', message: '保存失败', modified: true });
+            }
+          })
+          .finally(function () {
+            saving = false;
+            saveButton.disabled = false;
+
+            if (queuedXml && queuedXml !== xml) {
+              var pending = queuedXml;
+              queuedXml = null;
+              saveXml(pending, true);
+            }
+          });
+      }
+
+      function loadFile() {
+        if (!fileId) {
+          setStatus('缺少文件 ID', 'error');
+          return;
+        }
+
+        setStatus('正在加载');
+
+        api('/api/files/' + encodeURIComponent(fileId))
+          .then(function (body) {
+            file = body.file;
+            xml = body.xml;
+            updateHeader();
+            setStatus('已加载', 'ok');
+            sendLoad();
+          })
+          .catch(function (err) {
+            if (err && err.error === 'file_not_found') {
+              setStatus('文件不存在', 'error');
+            } else if (!err || err.error !== 'not_authenticated') {
+              setStatus('加载失败', 'error');
+            }
+          });
+      }
+
+      function renameFile() {
+        if (!file) {
+          return;
+        }
+
+        CompanyDialog.prompt({
+          title: '重命名图纸',
+          label: '新文件名',
+          value: file.name,
+          confirmText: '保存',
+          requiredText: '请输入新文件名'
+        }).then(function (name) {
+          if (name == null) {
+            return;
+          }
+
+          api('/api/files/' + encodeURIComponent(file.id) + '/rename', {
+            method: 'POST',
+            body: JSON.stringify({ name: name })
+          })
+            .then(function (body) {
+              file = body.file;
+              updateHeader();
+              postToEditor({ action: 'load', xml: xml, title: file.name, autosave: 1, saveAndExit: 0, noExitBtn: 1 });
+              setStatus('已重命名', 'ok');
+              notify('文件名已更新。', 'ok');
+            })
+            .catch(function () {
+              setStatus('重命名失败', 'error');
+              notify('重命名失败，请稍后重试。', 'error');
+            });
+          });
+      }
+
+      function shareFile() {
+        if (!file) {
+          return;
+        }
+
+        api('/api/files/' + encodeURIComponent(file.id) + '/share', {
+          method: 'POST',
+          body: JSON.stringify({})
+        })
+          .then(function (body) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(body.url).catch(function () {});
+            }
+
+            setStatus('分享链接已生成', 'ok');
+            notify('分享链接已生成。', 'ok');
+            CompanyDialog.share({
+              title: '分享链接已生成',
+              message: '链接为只读访问，可直接复制发送。',
+              label: file.name,
+              value: body.url,
+              confirmText: '完成'
+            });
+          })
+          .catch(function () {
+            setStatus('分享失败', 'error');
+            notify('分享失败，请稍后重试。', 'error');
+          });
+      }
+
+      function exportDiagram(format) {
+        if (!file || !frameReady) {
+          return;
+        }
+
+        setStatus('正在导出');
+
+        if (format === 'png') {
+          postToEditor({
+            action: 'export',
+            format: 'png',
+            scale: 1,
+            border: 10,
+            transparent: false,
+            spin: '正在导出 PNG'
+          });
+        } else {
+          postToEditor({
+            action: 'export',
+            format: 'svg',
+            asText: true,
+            scale: 1,
+            border: 10,
+            embedImages: true,
+            spin: '正在导出 SVG'
+          });
+        }
+      }
+
+      function downloadXml() {
+        if (!file) {
+          return;
+        }
+
+        triggerDownload('/api/files/' + encodeURIComponent(file.id) + '/download', file.name);
+      }
+
+      window.addEventListener('message', function (evt) {
+        if (evt.source !== frame.contentWindow || typeof evt.data !== 'string') {
+          return;
+        }
+
+        var message;
+
+        try {
+          message = JSON.parse(evt.data);
+        } catch (e) {
+          return;
+        }
+
+        if (message.event === 'init') {
+          frameReady = true;
+          sendLoad();
+        } else if (message.event === 'load') {
+          setStatus('可以编辑', 'ok');
+        } else if (message.event === 'autosave') {
+          saveXml(message.xml, true);
+        } else if (message.event === 'save') {
+          saveXml(message.xml, false);
+        } else if (message.event === 'export') {
+          if (message.format === 'png' && message.data) {
+            triggerDownload(message.data, fileNameWithExtension('.png'));
+            setStatus('PNG 已导出', 'ok');
+            notify('PNG 已导出。', 'ok');
+          } else if (message.format === 'svg' && message.data) {
+            downloadText(message.data, fileNameWithExtension('.svg'), 'image/svg+xml;charset=utf-8');
+            setStatus('SVG 已导出', 'ok');
+            notify('SVG 已导出。', 'ok');
+          } else {
+            setStatus('导出失败', 'error');
+            notify('导出失败，请稍后重试。', 'error');
+          }
+        } else if (message.event === 'exit') {
+          window.location.href = '/app.html';
+        }
+      });
+
+      saveButton.addEventListener('click', function () {
+        postToEditor({ action: 'invokeAction', actionName: 'save' });
+      });
+      backButton.addEventListener('click', function () {
+        window.location.href = '/app.html';
+      });
+      renameButton.addEventListener('click', renameFile);
+      shareButton.addEventListener('click', shareFile);
+      exportPngButton.addEventListener('click', function () {
+        exportDiagram('png');
+      });
+      exportSvgButton.addEventListener('click', function () {
+        exportDiagram('svg');
+      });
+      downloadButton.addEventListener('click', downloadXml);
+
+      frame.src = '/index.html?embed=1&proto=json&lang=zh&spin=1&saveAndExit=0&noExitBtn=1&gapi=0&db=0&od=0&gh=0&gl=0&tr=0&plugins=0&ui=atlas';
+      loadFile();
+    }());
+  </script>
+</body>
+</html>

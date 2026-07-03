@@ -1,0 +1,21 @@
+services:
+  drawio-company:
+    build:
+      context: ../..
+      dockerfile: deploy/phase2/Dockerfile
+    container_name: company-drawio
+    environment:
+      DRAWIO_TEMP_PASSWORD: "123456"
+      DRAWIO_SESSION_DAYS: "7"
+      DRAWIO_ACCESS_LOG: "/data/logs/access.log"
+      # DRAWIO_COOKIE_SECURE: "1"
+      # DRAWIO_OPS_TOKEN: "replace-with-a-long-random-token"
+      # DRAWIO_EXPORT_URL: "http://drawio-export:8000/export"
+    ports:
+      - "8080:8080"
+    volumes:
+      - company-drawio-data:/data
+    restart: unless-stopped
+
+volumes:
+  company-drawio-data:
