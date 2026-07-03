@@ -1,0 +1,29 @@
+{
+  "savedAt": "2026-07-03T09:35:35.566Z",
+  "sessions": [
+    {
+      "tokenHash": "240ac3946159e89c8cdbdb45abaad36f3426b456628455817547d1a85e73400c",
+      "employeeId": "10001",
+      "createdAt": "2026-07-03T08:21:38.825Z",
+      "expiresAt": "2026-07-10T08:21:38.825Z"
+    },
+    {
+      "tokenHash": "6cad72f982a412ded0817a366bc553776622a7909f2623ec444ad427825db515",
+      "employeeId": "10001",
+      "createdAt": "2026-07-03T08:22:55.471Z",
+      "expiresAt": "2026-07-10T08:22:55.471Z"
+    },
+    {
+      "tokenHash": "9c07f28dc093d5a1f6994c6a6a8bc747ceadfc8282ec67c31f605a2de1a94a3e",
+      "employeeId": "smoke8092",
+      "createdAt": "2026-07-03T08:43:11.677Z",
+      "expiresAt": "2026-07-10T08:43:11.677Z"
+    },
+    {
+      "tokenHash": "d9a3f2e71b88bd7de375751ae4036587d4bcf1bbff73ff952d13d82653956de0",
+      "employeeId": "439",
+      "createdAt": "2026-07-03T09:35:35.565Z",
+      "expiresAt": "2026-07-10T09:35:35.565Z"
+    }
+  ]
+}
