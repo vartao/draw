@@ -34,6 +34,7 @@
     (function () {
       var params = new URLSearchParams(window.location.search);
       var token = params.get('token');
+      var internalShare = params.get('internalShare') || params.get('shareId');
       var title = document.getElementById('title');
       var meta = document.getElementById('meta');
       var status = document.getElementById('status');
@@ -96,20 +97,22 @@
         }
 
         var a = document.createElement('a');
-        a.href = '/api/share/' + encodeURIComponent(token) + '/download';
+        a.href = internalShare ?
+          '/api/internal-shares/' + encodeURIComponent(internalShare) + '/download' :
+          '/api/share/' + encodeURIComponent(token) + '/download';
         a.download = state.file.name;
         document.body.appendChild(a);
         a.click();
         a.remove();
       }
 
-      if (!token) {
+      if (!token && !internalShare) {
         viewer.innerHTML = '<div class="empty">分享链接无效。</div>';
         setStatus('缺少 token', 'error');
         return;
       }
 
-      fetch('/api/share/' + encodeURIComponent(token), { credentials: 'same-origin' })
+      fetch(internalShare ? '/api/internal-shares/' + encodeURIComponent(internalShare) : '/api/share/' + encodeURIComponent(token), { credentials: 'same-origin' })
         .then(function (res) {
           return res.json().then(function (body) {
             if (!res.ok) {
@@ -120,8 +123,14 @@
           });
         })
         .then(function (body) {
-          state = body;
-          title.textContent = body.file.name;
+          state = {
+            file: body.file || (body.share && body.share.file),
+            share: body.share,
+            xml: body.xml
+          };
+          body.file = state.file;
+          body.xml = state.xml;
+          title.textContent = state.file.name;
           meta.textContent = '只读 · 更新于 ' + formatDate(body.file.updatedAt);
           document.title = body.file.name + ' - 只读分享';
           setStatus('只读', 'ok');

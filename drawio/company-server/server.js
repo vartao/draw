@@ -1,7 +1,11 @@
 const crypto = require('crypto');
+const dns = require('dns/promises');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const http = require('http');
+const https = require('https');
+const net = require('net');
+const os = require('os');
 const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -10,17 +14,35 @@ const PUBLIC_DIR = path.resolve(__dirname, 'public');
 const DATA_DIR = path.resolve(process.env.DRAWIO_DATA_DIR || path.join(__dirname, 'data'));
 const EMPLOYEE_DIR = path.join(DATA_DIR, 'employees');
 const SHARES_DIR = path.join(DATA_DIR, 'shares');
+const INTERNAL_SHARES_DIR = path.join(DATA_DIR, 'internal-shares');
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 
+// Bind to loopback by default. Set HOST=0.0.0.0 only when LAN access is intended.
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 8081);
 const TEMP_PASSWORD = process.env.DRAWIO_TEMP_PASSWORD || '123456';
+const ADMIN_ID = String(process.env.DRAWIO_ADMIN_ID || 'admin').trim() || 'admin';
+const ADMIN_PASSWORD = process.env.DRAWIO_ADMIN_PASSWORD || TEMP_PASSWORD;
 const COOKIE_NAME = process.env.DRAWIO_COOKIE_NAME || 'company_drawio_session';
 const SESSION_DAYS = Number(process.env.DRAWIO_SESSION_DAYS || 7);
 const SESSION_TTL_MS = Math.max(1, SESSION_DAYS) * 24 * 60 * 60 * 1000;
 const MAX_JSON_BYTES = Number(process.env.DRAWIO_MAX_JSON_BYTES || 25 * 1024 * 1024);
 const MAX_EXPORT_BYTES = Number(process.env.DRAWIO_MAX_EXPORT_BYTES || 50 * 1024 * 1024);
+const MAX_AI_PROMPT_CHARS = Number(process.env.DRAWIO_AI_MAX_PROMPT_CHARS || 4000);
+const MAX_CHAT_MESSAGE_CHARS = Number(process.env.DRAWIO_MAX_CHAT_MESSAGE_CHARS || 2000);
+const MAX_PROFILE_NAME_CHARS = Number(process.env.DRAWIO_MAX_PROFILE_NAME_CHARS || 40);
+const MAX_INTERNAL_SHARE_RECIPIENTS = Number(process.env.DRAWIO_MAX_INTERNAL_SHARE_RECIPIENTS || 30);
+const MIN_PASSWORD_CHARS = Number(process.env.DRAWIO_MIN_PASSWORD_CHARS || 6);
+const MAX_BATCH_ACCOUNTS = Number(process.env.DRAWIO_MAX_BATCH_ACCOUNTS || 100);
+const INVITE_CODE_BYTES = Number(process.env.DRAWIO_INVITE_CODE_BYTES || 9);
+const AI_TIMEOUT_MS = Number(process.env.DRAWIO_AI_TIMEOUT_MS || 45000);
+const TRUST_PROXY = process.env.DRAWIO_TRUST_PROXY === '1';
+const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.DRAWIO_AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const LOGIN_RATE_LIMIT_MAX = Number(process.env.DRAWIO_LOGIN_RATE_LIMIT_MAX || 20);
+const REGISTER_RATE_LIMIT_MAX = Number(process.env.DRAWIO_REGISTER_RATE_LIMIT_MAX || 20);
+const AI_ALLOW_PRIVATE = process.env.DRAWIO_AI_ALLOW_PRIVATE === '1';
 const ACCESS_LOG_FILE = String(process.env.DRAWIO_ACCESS_LOG || '').toLowerCase() === 'off' ?
   null :
   path.resolve(process.env.DRAWIO_ACCESS_LOG || path.join(LOG_DIR, 'access.log'));
@@ -29,10 +51,26 @@ const STARTED_AT_MS = Date.now();
 const EMPLOYEE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{8,80}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,160}$/;
+const INVITE_CODE_PATTERN = /^[A-Za-z0-9_-]{6,96}$/;
+const ACCOUNT_ROLES = new Set(['user', 'admin']);
+const ACCOUNT_STATUSES = new Set(['pending', 'active', 'disabled']);
+const AI_PROVIDER_FORMATS = new Set(['openai', 'anthropic']);
+const AI_ALLOWED_ORIGINS = new Set([
+  'https://api.openai.com',
+  'https://api.anthropic.com',
+  ...String(process.env.DRAWIO_AI_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean)
+]);
+const AI_NODE_TYPES = new Set(['start', 'process', 'decision', 'data', 'end']);
 
 const EMPTY_DIAGRAM_XML = '<mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>';
 
 const sessions = new Map();
+const accounts = new Map();
+const authRateLimits = new Map();
+let accountsLoaded = false;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -53,8 +91,100 @@ const MIME_TYPES = {
   '.drawio': 'application/xml; charset=utf-8'
 };
 
+class CompatHeaders {
+  constructor(headers = {}) {
+    this.headers = new Map();
+
+    Object.entries(headers).forEach(([name, value]) => {
+      const normalizedName = String(name).toLowerCase();
+      const normalizedValue = Array.isArray(value) ? value.join(', ') : String(value == null ? '' : value);
+      this.headers.set(normalizedName, normalizedValue);
+    });
+  }
+
+  get(name) {
+    return this.headers.get(String(name).toLowerCase()) || null;
+  }
+}
+
+function normalizeRequestHeaders(headers = {}) {
+  if (headers && typeof headers.forEach === 'function') {
+    const output = {};
+    headers.forEach((value, key) => {
+      output[key] = value;
+    });
+    return output;
+  }
+
+  return { ...headers };
+}
+
+function fetchCompat(url, options = {}) {
+  if (typeof globalThis.fetch === 'function') {
+    return globalThis.fetch(url, options);
+  }
+
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(String(url));
+    const transport = target.protocol === 'https:' ? https : http;
+    const req = transport.request(target, {
+      method: options.method || 'GET',
+      headers: normalizeRequestHeaders(options.headers)
+    }, (upstream) => {
+      const chunks = [];
+
+      upstream.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+
+      upstream.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+
+        resolve({
+          status: upstream.statusCode || 0,
+          ok: upstream.statusCode >= 200 && upstream.statusCode < 300,
+          headers: new CompatHeaders(upstream.headers),
+          text: async () => buffer.toString('utf8'),
+          arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+        });
+      });
+    });
+
+    req.on('error', reject);
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        req.destroy(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+        return;
+      }
+
+      options.signal.addEventListener('abort', () => {
+        req.destroy(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+      }, { once: true });
+    }
+
+    if (options.body != null) {
+      req.write(options.body);
+    }
+
+    req.end();
+  });
+}
+
 function nowIso() {
   return new Date().toISOString();
+}
+
+function findEnv(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return '';
 }
 
 function hashValue(value) {
@@ -77,8 +207,20 @@ function isValidFileId(value) {
   return FILE_ID_PATTERN.test(String(value || ''));
 }
 
+function isValidFolderId(value) {
+  return FILE_ID_PATTERN.test(String(value || ''));
+}
+
 function isValidToken(value) {
   return TOKEN_PATTERN.test(String(value || ''));
+}
+
+function sanitizeProfileName(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_PROFILE_NAME_CHARS);
 }
 
 function sanitizeFileName(value) {
@@ -103,6 +245,26 @@ function sanitizeFileName(value) {
   }
 
   return name.slice(0, 180);
+}
+
+function sanitizeFolderName(value) {
+  let name = String(value || '').trim();
+
+  if (name.length === 0) {
+    name = '新建文件夹';
+  }
+
+  name = name
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+/, '')
+    .trim();
+
+  if (name.length === 0) {
+    name = '新建文件夹';
+  }
+
+  return name.slice(0, 120);
 }
 
 function parseCookies(header) {
@@ -154,6 +316,7 @@ function clearCookie() {
 async function ensureDataDirs() {
   await fsp.mkdir(EMPLOYEE_DIR, { recursive: true });
   await fsp.mkdir(SHARES_DIR, { recursive: true });
+  await fsp.mkdir(INTERNAL_SHARES_DIR, { recursive: true });
   await fsp.mkdir(LOG_DIR, { recursive: true });
 }
 
@@ -161,6 +324,381 @@ async function ensureEmployeeDirs(employeeId) {
   const base = employeeBaseDir(employeeId);
   await fsp.mkdir(path.join(base, 'files'), { recursive: true });
   await fsp.mkdir(path.join(base, 'meta'), { recursive: true });
+  await fsp.mkdir(path.join(base, 'folders'), { recursive: true });
+}
+
+function employeeProfilePath(employeeId) {
+  return path.join(employeeBaseDir(employeeId), 'profile.json');
+}
+
+function employeeProfileSummary(employeeId, name = '') {
+  const cleanName = sanitizeProfileName(name);
+
+  return {
+    employeeId,
+    name: cleanName,
+    displayName: cleanName || employeeId
+  };
+}
+
+async function readEmployeeProfile(employeeId) {
+  if (!isValidEmployeeId(employeeId)) {
+    return null;
+  }
+
+  try {
+    const raw = await fsp.readFile(employeeProfilePath(employeeId), 'utf8');
+    const profile = JSON.parse(raw);
+    return employeeProfileSummary(employeeId, profile && profile.name);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  return employeeProfileSummary(employeeId);
+}
+
+async function writeEmployeeProfile(employeeId, name) {
+  if (!isValidEmployeeId(employeeId)) {
+    throw Object.assign(new Error('Invalid employee id'), { status: 400, code: 'invalid_employee_id' });
+  }
+
+  const profile = employeeProfileSummary(employeeId, name);
+  await ensureEmployeeDirs(employeeId);
+  await atomicWrite(employeeProfilePath(employeeId), JSON.stringify({
+    employeeId,
+    name: profile.name,
+    updatedAt: nowIso()
+  }, null, 2));
+
+  return profile;
+}
+
+async function loadEmployeeProfiles(employeeIds) {
+  const uniqueIds = Array.from(new Set((employeeIds || []).filter(isValidEmployeeId)));
+  const entries = await Promise.all(uniqueIds.map(async (employeeId) => {
+    const profile = await readEmployeeProfile(employeeId);
+    return [employeeId, profile || employeeProfileSummary(employeeId)];
+  }));
+
+  return Object.fromEntries(entries);
+}
+
+function normalizeAccountRole(value) {
+  const role = String(value || '').trim().toLowerCase();
+  return ACCOUNT_ROLES.has(role) ? role : 'user';
+}
+
+function normalizeAccountStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  return ACCOUNT_STATUSES.has(status) ? status : 'pending';
+}
+
+function normalizeInviteCode(value) {
+  return String(value || '').trim();
+}
+
+function isValidInviteCode(value) {
+  return INVITE_CODE_PATTERN.test(normalizeInviteCode(value));
+}
+
+function isValidPassword(value) {
+  const password = String(value || '');
+  const minLength = Number.isFinite(MIN_PASSWORD_CHARS) ? MIN_PASSWORD_CHARS : 6;
+  return password.length >= minLength && password.length <= 256;
+}
+
+function createPasswordRecord(password) {
+  const passwordSalt = randomToken(16);
+  const passwordHash = crypto.scryptSync(String(password || ''), passwordSalt, 64).toString('base64url');
+  return { passwordSalt, passwordHash };
+}
+
+function verifyPasswordRecord(account, password) {
+  if (!account) {
+    return false;
+  }
+
+  if (account.source === 'environment') {
+    return timingSafeEqualText(password, ADMIN_PASSWORD);
+  }
+
+  if (!account.passwordSalt || !account.passwordHash) {
+    return false;
+  }
+
+  const passwordHash = crypto.scryptSync(String(password || ''), account.passwordSalt, 64).toString('base64url');
+  return timingSafeEqualText(passwordHash, account.passwordHash);
+}
+
+function envAdminAccount() {
+  const employeeId = isValidEmployeeId(ADMIN_ID) ? ADMIN_ID : 'admin';
+  const name = sanitizeProfileName(process.env.DRAWIO_ADMIN_NAME || 'Administrator');
+
+  return {
+    employeeId,
+    name,
+    displayName: name || employeeId,
+    role: 'admin',
+    status: 'active',
+    source: 'environment',
+    createdAt: '',
+    updatedAt: ''
+  };
+}
+
+function normalizeAccountRecord(row) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+
+  const employeeId = normalizeEmployeeId(row.employeeId);
+
+  if (!isValidEmployeeId(employeeId)) {
+    return null;
+  }
+
+  const name = sanitizeProfileName(row.name);
+  const status = normalizeAccountStatus(row.status);
+
+  return {
+    employeeId,
+    name,
+    displayName: name || employeeId,
+    role: normalizeAccountRole(row.role),
+    status,
+    passwordSalt: typeof row.passwordSalt === 'string' ? row.passwordSalt : '',
+    passwordHash: typeof row.passwordHash === 'string' ? row.passwordHash : '',
+    inviteCode: isValidInviteCode(row.inviteCode) ? normalizeInviteCode(row.inviteCode) : '',
+    inviteCodeHash: typeof row.inviteCodeHash === 'string' ? row.inviteCodeHash : '',
+    inviteCodePreview: typeof row.inviteCodePreview === 'string' ? row.inviteCodePreview : '',
+    inviteCreatedAt: typeof row.inviteCreatedAt === 'string' ? row.inviteCreatedAt : '',
+    inviteAcceptedAt: typeof row.inviteAcceptedAt === 'string' ? row.inviteAcceptedAt : '',
+    createdAt: typeof row.createdAt === 'string' ? row.createdAt : nowIso(),
+    createdBy: typeof row.createdBy === 'string' ? row.createdBy : '',
+    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : nowIso(),
+    updatedBy: typeof row.updatedBy === 'string' ? row.updatedBy : '',
+    registeredAt: typeof row.registeredAt === 'string' ? row.registeredAt : ''
+  };
+}
+
+function accountSummary(account, extra = {}) {
+  const name = sanitizeProfileName(account && account.name);
+  const employeeId = account && account.employeeId;
+
+  return {
+    employeeId,
+    name,
+    displayName: name || employeeId,
+    role: normalizeAccountRole(account && account.role),
+    status: normalizeAccountStatus(account && account.status),
+    source: account && account.source === 'environment' ? 'environment' : 'stored',
+    createdAt: account && account.createdAt || '',
+    createdBy: account && account.createdBy || '',
+    updatedAt: account && account.updatedAt || '',
+    updatedBy: account && account.updatedBy || '',
+    registeredAt: account && account.registeredAt || '',
+    inviteCreatedAt: account && account.inviteCreatedAt || '',
+    inviteAcceptedAt: account && account.inviteAcceptedAt || '',
+    inviteCode: account && account.status === 'pending' ? account.inviteCode || '' : '',
+    inviteCodePreview: account && account.inviteCodePreview || '',
+    canRegister: Boolean(account && account.status === 'pending' && account.inviteCodeHash),
+    ...extra
+  };
+}
+
+async function ensureAccountsLoaded() {
+  if (accountsLoaded) {
+    return;
+  }
+
+  accounts.clear();
+
+  try {
+    const raw = (await fsp.readFile(ACCOUNTS_FILE, 'utf8')).replace(/^\uFEFF/, '');
+    const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed.accounts) ? parsed.accounts : Array.isArray(parsed) ? parsed : [];
+
+    rows.forEach((row) => {
+      const account = normalizeAccountRecord(row);
+
+      if (account) {
+        accounts.set(account.employeeId, account);
+      }
+    });
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn(`Unable to load accounts: ${err.message}`);
+    }
+  }
+
+  accountsLoaded = true;
+}
+
+async function saveAccounts() {
+  await ensureDataDirs();
+
+  const rows = Array.from(accounts.values())
+    .filter((account) => account && account.source !== 'environment')
+    .sort((a, b) => a.employeeId.localeCompare(b.employeeId, 'zh-CN'));
+
+  await atomicWrite(ACCOUNTS_FILE, JSON.stringify({
+    savedAt: nowIso(),
+    accounts: rows
+  }, null, 2));
+}
+
+function getAccount(employeeId) {
+  const normalizedId = normalizeEmployeeId(employeeId);
+  const stored = accounts.get(normalizedId);
+
+  if (stored) {
+    return stored;
+  }
+
+  const admin = envAdminAccount();
+  return normalizedId === admin.employeeId ? admin : null;
+}
+
+async function getSessionAccount(session) {
+  if (!session || !isValidEmployeeId(session.employeeId)) {
+    return null;
+  }
+
+  await ensureAccountsLoaded();
+  return getAccount(session.employeeId);
+}
+
+function isAdminAccount(account) {
+  return Boolean(account && account.status === 'active' && account.role === 'admin');
+}
+
+function generateInviteCode() {
+  const bytes = Number.isFinite(INVITE_CODE_BYTES) ? INVITE_CODE_BYTES : 9;
+  return randomToken(Math.max(6, Math.floor(bytes)));
+}
+
+function inviteCodeHash(code) {
+  return hashValue(`invite:${normalizeInviteCode(code)}`);
+}
+
+function assignInviteCode(account, actorId) {
+  const code = generateInviteCode();
+  const time = nowIso();
+
+  account.inviteCodeHash = inviteCodeHash(code);
+  account.inviteCode = code;
+  account.inviteCodePreview = code.slice(-4);
+  account.inviteCreatedAt = time;
+  account.inviteAcceptedAt = '';
+  account.updatedAt = time;
+  account.updatedBy = actorId || '';
+
+  return code;
+}
+
+function verifyInviteCode(account, code) {
+  return Boolean(
+    account &&
+    account.inviteCodeHash &&
+    isValidInviteCode(code) &&
+    timingSafeEqualText(account.inviteCodeHash, inviteCodeHash(code))
+  );
+}
+
+async function createPendingAccount(input, actorId, options = {}) {
+  await ensureAccountsLoaded();
+
+  const employeeId = normalizeEmployeeId(input && input.employeeId);
+
+  if (!isValidEmployeeId(employeeId)) {
+    throw publicError(400, 'invalid_employee_id', 'Employee ID is invalid.');
+  }
+
+  if (getAccount(employeeId)) {
+    throw publicError(409, 'account_exists', 'Account already exists.');
+  }
+
+  const time = nowIso();
+  const account = {
+    employeeId,
+    name: sanitizeProfileName(input && input.name),
+    displayName: '',
+    role: normalizeAccountRole(input && input.role),
+    status: 'pending',
+    passwordSalt: '',
+    passwordHash: '',
+    inviteCode: '',
+    inviteCodeHash: '',
+    inviteCodePreview: '',
+    inviteCreatedAt: '',
+    inviteAcceptedAt: '',
+    createdAt: time,
+    createdBy: actorId || '',
+    updatedAt: time,
+    updatedBy: actorId || '',
+    registeredAt: ''
+  };
+  const inviteCode = assignInviteCode(account, actorId);
+  account.displayName = account.name || employeeId;
+  accounts.set(employeeId, account);
+
+  if (options.save !== false) {
+    await saveAccounts();
+  }
+
+  return { account, inviteCode };
+}
+
+function parseBatchAccounts(payload) {
+  if (Array.isArray(payload && payload.accounts)) {
+    return payload.accounts.map((account, index) => ({
+      index,
+      employeeId: account && account.employeeId,
+      name: account && account.name,
+      role: account && account.role
+    }));
+  }
+
+  return String(payload && payload.text || '')
+    .split(/\r?\n/)
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter((row) => row.line && !row.line.startsWith('#'))
+    .map((row) => {
+      const parts = row.line.split(/[\t,，]/).map((part) => part.trim());
+
+      return {
+        index: row.index,
+        employeeId: parts[0],
+        name: parts[1] || '',
+        role: parts[2] || payload.role || 'user'
+      };
+    });
+}
+
+function listAccountSummaries() {
+  const rows = new Map();
+  const admin = envAdminAccount();
+
+  rows.set(admin.employeeId, admin);
+  accounts.forEach((account) => {
+    rows.set(account.employeeId, account);
+  });
+
+  return Array.from(rows.values())
+    .map((account) => accountSummary(account))
+    .sort((a, b) => {
+      if (a.role !== b.role) {
+        return a.role === 'admin' ? -1 : 1;
+      }
+
+      if (a.status !== b.status) {
+        return a.status.localeCompare(b.status, 'zh-CN');
+      }
+
+      return a.employeeId.localeCompare(b.employeeId, 'zh-CN');
+    });
 }
 
 async function directoryStats(rootDir) {
@@ -261,29 +799,70 @@ async function getEmployeeCount() {
   }
 }
 
+async function listKnownEmployees(currentEmployeeId = '') {
+  await ensureDataDirs();
+  await ensureAccountsLoaded();
+  const ids = new Set();
+
+  accounts.forEach((account) => {
+    if (account.status === 'active') {
+      ids.add(account.employeeId);
+    }
+  });
+
+  try {
+    const entries = await fsp.readdir(EMPLOYEE_DIR, { withFileTypes: true });
+
+    entries.forEach((entry) => {
+      if (entry.isDirectory() && isValidEmployeeId(entry.name)) {
+        ids.add(entry.name);
+      }
+    });
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  for (const session of sessions.values()) {
+    if (session && isValidEmployeeId(session.employeeId)) {
+      ids.add(session.employeeId);
+    }
+  }
+
+  ids.delete(currentEmployeeId);
+  const sortedIds = Array.from(ids).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  return Promise.all(sortedIds.map((employeeId) => readEmployeeProfile(employeeId)));
+}
+
 async function getOperationalStatus() {
   await ensureDataDirs();
+  await ensureAccountsLoaded();
 
   const [
     writable,
     dataStats,
     employeeStats,
     shareStats,
+    internalShareStats,
     logStats,
     employeeCount,
     diagramCount,
     metadataCount,
-    shareCount
+    shareCount,
+    internalShareCount
   ] = await Promise.all([
     checkDataWritable(),
     directoryStats(DATA_DIR),
     directoryStats(EMPLOYEE_DIR),
     directoryStats(SHARES_DIR),
+    directoryStats(INTERNAL_SHARES_DIR),
     directoryStats(LOG_DIR),
     getEmployeeCount(),
     countFilesInDir(EMPLOYEE_DIR, (_entryPath, name) => name.endsWith('.drawio')),
     countFilesInDir(EMPLOYEE_DIR, (_entryPath, name) => name.endsWith('.json')),
-    countFilesInDir(SHARES_DIR, (_entryPath, name) => name.endsWith('.json'))
+    countFilesInDir(SHARES_DIR, (_entryPath, name) => name.endsWith('.json')),
+    countFilesInDir(INTERNAL_SHARES_DIR, (_entryPath, name) => name.endsWith('.json'))
   ]);
 
   return {
@@ -298,23 +877,40 @@ async function getOperationalStatus() {
     },
     counts: {
       activeSessions: sessions.size,
+      accounts: listAccountSummaries().length,
+      pendingAccounts: listAccountSummaries().filter((account) => account.status === 'pending').length,
       employees: employeeCount,
       diagrams: diagramCount,
       metadata: metadataCount,
-      shares: shareCount
+      shares: shareCount,
+      internalShares: internalShareCount
     },
     storage: {
       dataBytes: dataStats.bytes,
       employeeBytes: employeeStats.bytes,
       shareBytes: shareStats.bytes,
+      internalShareBytes: internalShareStats.bytes,
       logBytes: logStats.bytes,
       dataFiles: dataStats.files,
       dataDirectories: dataStats.directories
     },
     config: {
+      host: HOST,
+      trustProxy: TRUST_PROXY,
       sessionDays: SESSION_DAYS,
       maxJsonBytes: MAX_JSON_BYTES,
       maxExportBytes: MAX_EXPORT_BYTES,
+      authRateLimitWindowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+      loginRateLimitMax: LOGIN_RATE_LIMIT_MAX,
+      registerRateLimitMax: REGISTER_RATE_LIMIT_MAX,
+      maxAiPromptChars: MAX_AI_PROMPT_CHARS,
+      maxChatMessageChars: MAX_CHAT_MESSAGE_CHARS,
+      maxInternalShareRecipients: MAX_INTERNAL_SHARE_RECIPIENTS,
+      aiTimeoutMs: AI_TIMEOUT_MS,
+      aiAllowedOrigins: Array.from(AI_ALLOWED_ORIGINS).sort(),
+      aiPrivateNetworksAllowed: AI_ALLOW_PRIVATE,
+      aiOpenAiConfigured: Boolean(findEnv('DRAWIO_AI_OPENAI_API_KEY', 'DRAWIO_OPENAI_API_KEY', 'OPENAI_API_KEY')),
+      aiAnthropicConfigured: Boolean(findEnv('DRAWIO_AI_ANTHROPIC_API_KEY', 'DRAWIO_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY')),
       secureCookie: process.env.DRAWIO_COOKIE_SECURE === '1',
       accessLog: ACCESS_LOG_FILE || 'off',
       opsTokenRequired: Boolean(OPS_TOKEN),
@@ -325,7 +921,7 @@ async function getOperationalStatus() {
 
 async function loadSessions() {
   try {
-    const raw = await fsp.readFile(SESSIONS_FILE, 'utf8');
+    const raw = (await fsp.readFile(SESSIONS_FILE, 'utf8')).replace(/^\uFEFF/, '');
     const parsed = JSON.parse(raw);
     const rows = Array.isArray(parsed.sessions) ? parsed.sessions : [];
     const now = Date.now();
@@ -401,7 +997,6 @@ async function createSession(employeeId) {
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
 
   sessions.set(hashValue(token), { employeeId, createdAt, expiresAt });
-  await ensureEmployeeDirs(employeeId);
   await saveSessions();
 
   return { token, expiresAt };
@@ -432,8 +1027,22 @@ function filePaths(employeeId, fileId) {
   };
 }
 
+function folderPaths(employeeId, folderId) {
+  if (!isValidEmployeeId(employeeId) || !isValidFolderId(folderId)) {
+    return null;
+  }
+
+  return {
+    meta: path.join(employeeBaseDir(employeeId), 'folders', `${folderId}.json`)
+  };
+}
+
 function sharePathForHash(tokenHash) {
   return path.join(SHARES_DIR, `${tokenHash}.json`);
+}
+
+function internalSharePath(shareId) {
+  return path.join(INTERNAL_SHARES_DIR, `${shareId}.json`);
 }
 
 async function readMeta(employeeId, fileId) {
@@ -469,14 +1078,91 @@ async function writeMeta(employeeId, fileId, meta) {
   await atomicWrite(paths.meta, JSON.stringify(meta, null, 2));
 }
 
+function normalizeFolderId(value) {
+  if (value == null || value === '') {
+    return null;
+  }
+
+  const folderId = String(value);
+
+  if (!isValidFolderId(folderId)) {
+    throw Object.assign(new Error('Invalid folder id'), { status: 400, code: 'invalid_folder_id' });
+  }
+
+  return folderId;
+}
+
+async function requireFolderTarget(employeeId, value) {
+  const folderId = normalizeFolderId(value);
+
+  if (folderId === null) {
+    return null;
+  }
+
+  const folder = await readFolder(employeeId, folderId);
+
+  if (!folder) {
+    throw Object.assign(new Error('Folder not found'), { status: 404, code: 'folder_not_found' });
+  }
+
+  return folderId;
+}
+
+async function readFolder(employeeId, folderId) {
+  const paths = folderPaths(employeeId, folderId);
+
+  if (!paths) {
+    return null;
+  }
+
+  try {
+    const raw = await fsp.readFile(paths.meta, 'utf8');
+    const folder = JSON.parse(raw);
+
+    if (folder && folder.id === folderId && folder.employeeId === employeeId) {
+      return {
+        ...folder,
+        parentId: folder.parentId == null ? null : folder.parentId
+      };
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  return null;
+}
+
+async function writeFolder(employeeId, folderId, folder) {
+  const paths = folderPaths(employeeId, folderId);
+
+  if (!paths) {
+    throw Object.assign(new Error('Invalid folder id'), { status: 400, code: 'invalid_folder_id' });
+  }
+
+  await atomicWrite(paths.meta, JSON.stringify(folder, null, 2));
+}
+
 function fileSummary(meta) {
   return {
     id: meta.id,
     name: meta.name,
+    folderId: isValidFolderId(meta.folderId) ? meta.folderId : null,
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     size: meta.size,
     etag: meta.etag
+  };
+}
+
+function folderSummary(folder) {
+  return {
+    id: folder.id,
+    name: folder.name,
+    parentId: isValidFolderId(folder.parentId) ? folder.parentId : null,
+    createdAt: folder.createdAt,
+    updatedAt: folder.updatedAt
   };
 }
 
@@ -518,8 +1204,52 @@ async function listFiles(employeeId) {
   return files;
 }
 
-async function createFile(employeeId, name, xml) {
+async function listFolders(employeeId) {
   await ensureEmployeeDirs(employeeId);
+  const folderDir = path.join(employeeBaseDir(employeeId), 'folders');
+  const entries = await fsp.readdir(folderDir, { withFileTypes: true });
+  const folders = [];
+
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.endsWith('.json')) {
+      try {
+        const raw = await fsp.readFile(path.join(folderDir, entry.name), 'utf8');
+        const folder = JSON.parse(raw);
+
+        if (folder && folder.employeeId === employeeId && isValidFolderId(folder.id)) {
+          folders.push(folderSummary(folder));
+        }
+      } catch (err) {
+        console.warn(`Skipping invalid folder metadata ${entry.name}: ${err.message}`);
+      }
+    }
+  }
+
+  folders.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  return folders;
+}
+
+async function createFolder(employeeId, name, parentId = null) {
+  await ensureEmployeeDirs(employeeId);
+  const normalizedParentId = await requireFolderTarget(employeeId, parentId);
+  const id = crypto.randomUUID();
+  const createdAt = nowIso();
+  const folder = {
+    id,
+    employeeId,
+    name: sanitizeFolderName(name),
+    parentId: normalizedParentId,
+    createdAt,
+    updatedAt: createdAt
+  };
+
+  await writeFolder(employeeId, id, folder);
+  return folder;
+}
+
+async function createFile(employeeId, name, xml, folderId = null) {
+  await ensureEmployeeDirs(employeeId);
+  const normalizedFolderId = await requireFolderTarget(employeeId, folderId);
   const id = crypto.randomUUID();
   const body = typeof xml === 'string' && xml.trim() ? xml : EMPTY_DIAGRAM_XML;
   const createdAt = nowIso();
@@ -527,6 +1257,7 @@ async function createFile(employeeId, name, xml) {
     id,
     employeeId,
     name: sanitizeFileName(name),
+    folderId: normalizedFolderId,
     createdAt,
     updatedAt: createdAt,
     size: Buffer.byteLength(body, 'utf8'),
@@ -603,6 +1334,39 @@ async function renameFile(employeeId, fileId, name) {
   return meta;
 }
 
+async function moveFile(employeeId, fileId, folderId = null) {
+  const current = await getFile(employeeId, fileId);
+
+  if (!current) {
+    return null;
+  }
+
+  const normalizedFolderId = await requireFolderTarget(employeeId, folderId);
+  const meta = {
+    ...current.meta,
+    folderId: normalizedFolderId,
+    updatedAt: nowIso()
+  };
+
+  await writeMeta(employeeId, fileId, meta);
+  return meta;
+}
+
+function copiedFileName(name) {
+  const baseName = sanitizeFileName(name || 'diagram.drawio').replace(/\.drawio$/i, '');
+  return sanitizeFileName(`${baseName} - 副本.drawio`);
+}
+
+async function copyFile(employeeId, fileId, folderId = null) {
+  const current = await getFile(employeeId, fileId);
+
+  if (!current) {
+    return null;
+  }
+
+  return createFile(employeeId, copiedFileName(current.meta.name), current.xml, folderId);
+}
+
 async function deleteFile(employeeId, fileId) {
   const meta = await readMeta(employeeId, fileId);
 
@@ -616,6 +1380,165 @@ async function deleteFile(employeeId, fileId) {
     fsp.unlink(paths.meta)
   ]);
   await deleteSharesForFile(employeeId, fileId);
+  await deleteInternalSharesForFile(employeeId, fileId);
+  return true;
+}
+
+async function renameFolder(employeeId, folderId, name) {
+  const folder = await readFolder(employeeId, folderId);
+
+  if (!folder) {
+    return null;
+  }
+
+  const updated = {
+    ...folder,
+    name: sanitizeFolderName(name),
+    updatedAt: nowIso()
+  };
+
+  await writeFolder(employeeId, folderId, updated);
+  return updated;
+}
+
+async function folderDescendantIds(employeeId, folderId) {
+  const folders = await listFolders(employeeId);
+  const childrenByParent = new Map();
+
+  folders.forEach((folder) => {
+    const key = folder.parentId || '';
+    const children = childrenByParent.get(key) || [];
+    children.push(folder.id);
+    childrenByParent.set(key, children);
+  });
+
+  const ids = [];
+  const pending = [folderId];
+
+  while (pending.length) {
+    const current = pending.shift();
+    const children = childrenByParent.get(current) || [];
+
+    children.forEach((childId) => {
+      ids.push(childId);
+      pending.push(childId);
+    });
+  }
+
+  return ids;
+}
+
+async function moveFolder(employeeId, folderId, parentId = null) {
+  const folder = await readFolder(employeeId, folderId);
+
+  if (!folder) {
+    return null;
+  }
+
+  const normalizedParentId = await requireFolderTarget(employeeId, parentId);
+
+  if (normalizedParentId === folderId) {
+    throw Object.assign(new Error('Folder cannot move into itself'), { status: 400, code: 'invalid_folder_move' });
+  }
+
+  const descendantIds = await folderDescendantIds(employeeId, folderId);
+
+  if (normalizedParentId && descendantIds.includes(normalizedParentId)) {
+    throw Object.assign(new Error('Folder cannot move into a descendant'), { status: 400, code: 'invalid_folder_move' });
+  }
+
+  const updated = {
+    ...folder,
+    parentId: normalizedParentId,
+    updatedAt: nowIso()
+  };
+
+  await writeFolder(employeeId, folderId, updated);
+  return updated;
+}
+
+async function copyFolder(employeeId, folderId, parentId = null) {
+  const source = await readFolder(employeeId, folderId);
+
+  if (!source) {
+    return null;
+  }
+
+  const normalizedParentId = await requireFolderTarget(employeeId, parentId);
+  const sourceFolders = await listFolders(employeeId);
+  const sourceFiles = await listFiles(employeeId);
+  const childrenByParent = new Map();
+  const filesByFolder = new Map();
+
+  sourceFolders.forEach((folder) => {
+    const key = folder.parentId || '';
+    const children = childrenByParent.get(key) || [];
+    children.push(folder);
+    childrenByParent.set(key, children);
+  });
+
+  sourceFiles.forEach((file) => {
+    const key = file.folderId || '';
+    const files = filesByFolder.get(key) || [];
+    files.push(file);
+    filesByFolder.set(key, files);
+  });
+
+  async function copyBranch(folder, newParentId, isRoot = false) {
+    const newFolder = await createFolder(
+      employeeId,
+      isRoot ? `${folder.name} - 副本` : folder.name,
+      newParentId
+    );
+
+    const files = filesByFolder.get(folder.id) || [];
+
+    for (const file of files) {
+      const current = await getFile(employeeId, file.id);
+
+      if (current) {
+        await createFile(employeeId, current.meta.name, current.xml, newFolder.id);
+      }
+    }
+
+    const children = childrenByParent.get(folder.id) || [];
+
+    for (const child of children) {
+      await copyBranch(child, newFolder.id);
+    }
+
+    return newFolder;
+  }
+
+  return copyBranch(source, normalizedParentId, true);
+}
+
+async function deleteFolder(employeeId, folderId) {
+  const folder = await readFolder(employeeId, folderId);
+
+  if (!folder) {
+    return false;
+  }
+
+  const folderIds = [folderId].concat(await folderDescendantIds(employeeId, folderId));
+  const folderIdSet = new Set(folderIds);
+  const files = await listFiles(employeeId);
+
+  for (const file of files) {
+    if (folderIdSet.has(file.folderId)) {
+      await deleteFile(employeeId, file.id);
+    }
+  }
+
+  for (const id of folderIds.reverse()) {
+    const paths = folderPaths(employeeId, id);
+    await fsp.unlink(paths.meta).catch((err) => {
+      if (err.code !== 'ENOENT') {
+        throw err;
+      }
+    });
+  }
+
   return true;
 }
 
@@ -698,46 +1621,937 @@ async function deleteSharesForFile(employeeId, fileId) {
     }));
 }
 
+function sanitizeChatText(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .trim()
+    .slice(0, MAX_CHAT_MESSAGE_CHARS);
+}
+
+function normalizeRecipients(value, ownerId) {
+  const raw = Array.isArray(value) ? value : String(value || '').split(/[,\s;，；、]+/);
+  const seen = new Set();
+  const recipients = [];
+
+  for (const item of raw) {
+    const employeeId = normalizeEmployeeId(item);
+
+    if (!employeeId || employeeId === ownerId || seen.has(employeeId)) {
+      continue;
+    }
+
+    if (!isValidEmployeeId(employeeId)) {
+      throw Object.assign(new Error('Invalid recipient'), { status: 400, code: 'invalid_recipient' });
+    }
+
+    seen.add(employeeId);
+    recipients.push(employeeId);
+  }
+
+  if (!recipients.length) {
+    throw Object.assign(new Error('Recipient required'), { status: 400, code: 'recipient_required' });
+  }
+
+  if (recipients.length > MAX_INTERNAL_SHARE_RECIPIENTS) {
+    throw Object.assign(new Error('Too many recipients'), { status: 400, code: 'too_many_recipients' });
+  }
+
+  return recipients;
+}
+
+function internalShareParticipants(share) {
+  return Array.from(new Set([share.ownerId].concat(Array.isArray(share.recipients) ? share.recipients : [])))
+    .filter(isValidEmployeeId);
+}
+
+function isInternalShareParticipant(share, employeeId) {
+  return internalShareParticipants(share).includes(employeeId);
+}
+
+async function readInternalShare(shareId) {
+  if (!isValidFileId(shareId)) {
+    return null;
+  }
+
+  try {
+    const raw = await fsp.readFile(internalSharePath(shareId), 'utf8');
+    const share = JSON.parse(raw);
+
+    if (!share || share.id !== shareId || !isValidEmployeeId(share.ownerId) || !isValidFileId(share.fileId)) {
+      return null;
+    }
+
+    share.recipients = Array.isArray(share.recipients) ? share.recipients.filter(isValidEmployeeId) : [];
+    share.messages = Array.isArray(share.messages) ? share.messages : [];
+    share.readBy = share.readBy && typeof share.readBy === 'object' ? Object.fromEntries(Object.entries(share.readBy)
+      .filter(([employeeId, readAt]) => isValidEmployeeId(employeeId) && typeof readAt === 'string')) : {};
+    return share;
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  return null;
+}
+
+async function writeInternalShare(share) {
+  await atomicWrite(internalSharePath(share.id), JSON.stringify(share, null, 2));
+}
+
+function internalShareMessage(authorId, text, type = 'message') {
+  return {
+    id: crypto.randomUUID(),
+    authorId,
+    text,
+    type,
+    createdAt: nowIso()
+  };
+}
+
+function unreadInternalShareCount(share, viewerId) {
+  const messages = Array.isArray(share.messages) ? share.messages : [];
+  const readAt = Date.parse(share.readBy && share.readBy[viewerId] ? share.readBy[viewerId] : '');
+  const readTime = Number.isNaN(readAt) ? 0 : readAt;
+
+  return messages.filter((message) => {
+    if (!message || message.authorId === viewerId) {
+      return false;
+    }
+
+    const messageTime = Date.parse(message.createdAt || '');
+    return !Number.isNaN(messageTime) && messageTime > readTime;
+  }).length;
+}
+
+async function internalShareSummary(share, file, viewerId) {
+  const messages = Array.isArray(share.messages) ? share.messages : [];
+  const lastMessage = messages.length ? messages[messages.length - 1] : null;
+  const participants = internalShareParticipants(share);
+  const messageAuthorIds = messages.map((message) => message && message.authorId).filter(isValidEmployeeId);
+  const profiles = await loadEmployeeProfiles(participants.concat(messageAuthorIds));
+
+  return {
+    id: share.id,
+    ownerId: share.ownerId,
+    recipients: share.recipients,
+    participants,
+    profiles,
+    unreadCount: unreadInternalShareCount(share, viewerId),
+    createdAt: share.createdAt,
+    updatedAt: share.updatedAt,
+    lastMessageAt: share.lastMessageAt || share.updatedAt,
+    direction: viewerId === share.ownerId ? 'sent' : 'received',
+    file: file ? fileSummary(file.meta) : null,
+    lastMessage
+  };
+}
+
+async function markInternalShareRead(employeeId, share) {
+  if (!share || !isInternalShareParticipant(share, employeeId)) {
+    return false;
+  }
+
+  const previous = share.readBy && share.readBy[employeeId];
+  share.readBy = share.readBy && typeof share.readBy === 'object' ? share.readBy : {};
+  share.readBy[employeeId] = nowIso();
+
+  if (previous === share.readBy[employeeId]) {
+    return false;
+  }
+
+  await writeInternalShare(share);
+  return true;
+}
+
+async function createInternalShare(ownerId, fileId, recipientsInput, messageInput) {
+  const current = await getFile(ownerId, fileId);
+
+  if (!current) {
+    return null;
+  }
+
+  const recipients = normalizeRecipients(recipientsInput, ownerId);
+  const message = sanitizeChatText(messageInput) || '分享了一张图纸。';
+  const createdAt = nowIso();
+  const share = {
+    id: crypto.randomUUID(),
+    ownerId,
+    fileId,
+    recipients,
+    createdAt,
+    updatedAt: createdAt,
+    lastMessageAt: createdAt,
+    readBy: {
+      [ownerId]: createdAt
+    },
+    messages: [
+      internalShareMessage(ownerId, message, 'share')
+    ]
+  };
+
+  await ensureDataDirs();
+  await writeInternalShare(share);
+  return { share, file: current };
+}
+
+async function getInternalShareForEmployee(employeeId, shareId) {
+  const share = await readInternalShare(shareId);
+
+  if (!share || !isInternalShareParticipant(share, employeeId)) {
+    return null;
+  }
+
+  const file = await getFile(share.ownerId, share.fileId);
+
+  if (!file) {
+    return { share, file: null };
+  }
+
+  return { share, file };
+}
+
+async function listInternalShares(employeeId) {
+  await ensureDataDirs();
+  const entries = await fsp.readdir(INTERNAL_SHARES_DIR, { withFileTypes: true });
+  const shares = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue;
+    }
+
+    try {
+      const shareId = entry.name.replace(/\.json$/i, '');
+      const shared = await getInternalShareForEmployee(employeeId, shareId);
+
+      if (shared) {
+        shares.push(await internalShareSummary(shared.share, shared.file, employeeId));
+      }
+    } catch (err) {
+      console.warn(`Skipping invalid internal share ${entry.name}: ${err.message}`);
+    }
+  }
+
+  shares.sort((a, b) => String(b.lastMessageAt).localeCompare(String(a.lastMessageAt)));
+  return shares;
+}
+
+async function addInternalShareMessage(employeeId, shareId, messageInput) {
+  const shared = await getInternalShareForEmployee(employeeId, shareId);
+
+  if (!shared) {
+    return null;
+  }
+
+  const text = sanitizeChatText(messageInput);
+
+  if (!text) {
+    throw Object.assign(new Error('Message required'), { status: 400, code: 'message_required' });
+  }
+
+  const message = internalShareMessage(employeeId, text);
+  shared.share.messages.push(message);
+  shared.share.readBy = shared.share.readBy && typeof shared.share.readBy === 'object' ? shared.share.readBy : {};
+  shared.share.readBy[employeeId] = message.createdAt;
+  shared.share.updatedAt = nowIso();
+  shared.share.lastMessageAt = message.createdAt;
+  await writeInternalShare(shared.share);
+
+  return { share: shared.share, file: shared.file, message };
+}
+
+async function deleteInternalSharesForFile(employeeId, fileId) {
+  await fsp.mkdir(INTERNAL_SHARES_DIR, { recursive: true });
+  const entries = await fsp.readdir(INTERNAL_SHARES_DIR, { withFileTypes: true });
+
+  await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map(async (entry) => {
+      const filePath = path.join(INTERNAL_SHARES_DIR, entry.name);
+
+      try {
+        const share = JSON.parse(await fsp.readFile(filePath, 'utf8'));
+
+        if (share.ownerId === employeeId && share.fileId === fileId) {
+          await fsp.unlink(filePath);
+        }
+      } catch (_err) {
+        // Ignore corrupt internal share records during cleanup.
+      }
+    }));
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.max(min, Math.min(max, number));
+}
+
+function publicError(status, code, message, extra = {}) {
+  return Object.assign(new Error(message), { status, code, publicMessage: message, ...extra });
+}
+
+function normalizeAiFormat(value) {
+  const format = String(value || 'openai').trim().toLowerCase();
+
+  if (format.includes('anthropic') || format.includes('claude')) {
+    return 'anthropic';
+  }
+
+  if (format.includes('openai') || format.includes('chat-completions') || format === 'compatible') {
+    return 'openai';
+  }
+
+  if (AI_PROVIDER_FORMATS.has(format)) {
+    return format;
+  }
+
+  throw publicError(400, 'unsupported_ai_provider', 'Unsupported AI provider format.');
+}
+
+function defaultAiBaseUrl(format) {
+  return format === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1';
+}
+
+function normalizeAiBaseUrl(value, format) {
+  const raw = String(value || defaultAiBaseUrl(format)).trim();
+  let url;
+
+  try {
+    url = new URL(raw);
+  } catch (_err) {
+    throw publicError(400, 'invalid_ai_base_url', 'AI base URL is invalid.');
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw publicError(400, 'invalid_ai_base_url', 'AI base URL must use http or https.');
+  }
+
+  return url.toString().replace(/\/+$/, '');
+}
+
+function aiBaseUrlInput(config, format) {
+  const clientBaseUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : '';
+
+  if (clientBaseUrl) {
+    return { value: clientBaseUrl, source: 'client' };
+  }
+
+  const envBaseUrl = format === 'anthropic' ?
+    findEnv('DRAWIO_AI_ANTHROPIC_BASE_URL', 'DRAWIO_ANTHROPIC_BASE_URL', 'ANTHROPIC_BASE_URL', 'DRAWIO_AI_BASE_URL') :
+    findEnv('DRAWIO_AI_OPENAI_BASE_URL', 'DRAWIO_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'DRAWIO_AI_BASE_URL');
+
+  return { value: envBaseUrl, source: envBaseUrl ? 'environment' : 'default' };
+}
+
+function isPrivateHostname(hostname) {
+  const normalized = String(hostname || '').toLowerCase();
+  return normalized === 'localhost' || normalized.endsWith('.localhost');
+}
+
+function isPrivateIpAddress(address) {
+  const ipVersion = net.isIP(address);
+
+  if (ipVersion === 4) {
+    const parts = address.split('.').map((part) => Number(part));
+
+    return (
+      parts[0] === 0 ||
+      parts[0] === 10 ||
+      parts[0] === 127 ||
+      (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) ||
+      (parts[0] === 169 && parts[1] === 254) ||
+      (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+      (parts[0] === 192 && parts[1] === 168)
+    );
+  }
+
+  if (ipVersion === 6) {
+    const normalized = address.toLowerCase();
+
+    if (normalized.startsWith('::ffff:')) {
+      return isPrivateIpAddress(normalized.slice('::ffff:'.length));
+    }
+
+    return (
+      normalized === '::' ||
+      normalized === '::1' ||
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      normalized.startsWith('fe80:')
+    );
+  }
+
+  return false;
+}
+
+async function resolveHostAddresses(hostname) {
+  if (net.isIP(hostname)) {
+    return [hostname];
+  }
+
+  if (isPrivateHostname(hostname)) {
+    return ['127.0.0.1'];
+  }
+
+  const rows = await dns.lookup(hostname, { all: true, verbatim: true });
+  return rows.map((row) => row.address);
+}
+
+async function assertAiBaseUrlAllowed(config) {
+  if (config.baseUrlSource !== 'client') {
+    return;
+  }
+
+  const url = new URL(config.baseUrl);
+
+  if (AI_ALLOWED_ORIGINS.has(url.origin)) {
+    return;
+  }
+
+  // Client-supplied AI endpoints are restricted so this route cannot become an SSRF or API-key exfiltration proxy.
+  if (AI_ALLOW_PRIVATE) {
+    try {
+      const addresses = await resolveHostAddresses(url.hostname);
+
+      if (addresses.length > 0 && addresses.every(isPrivateIpAddress)) {
+        return;
+      }
+    } catch (_err) {
+      // Fall through to the public error below.
+    }
+  }
+
+  throw publicError(400, 'ai_base_url_not_allowed', 'AI base URL is not allowed.');
+}
+
+function aiEndpoint(baseUrl, terminalPath) {
+  const normalized = String(baseUrl || '').replace(/\/+$/, '');
+
+  if (normalized.endsWith(`/${terminalPath}`)) {
+    return new URL(normalized);
+  }
+
+  return new URL(`${normalized}/${terminalPath}`);
+}
+
+function normalizeAiConfig(input) {
+  const config = input && typeof input === 'object' ? input : {};
+  const format = normalizeAiFormat(config.providerFormat || config.format || config.provider || process.env.DRAWIO_AI_PROVIDER || 'openai');
+  const baseUrlConfig = aiBaseUrlInput(config, format);
+  const baseUrl = normalizeAiBaseUrl(baseUrlConfig.value, format);
+  const apiKey = String(config.apiKey || (
+    format === 'anthropic' ?
+      findEnv('DRAWIO_AI_ANTHROPIC_API_KEY', 'DRAWIO_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY', 'DRAWIO_AI_API_KEY') :
+      findEnv('DRAWIO_AI_OPENAI_API_KEY', 'DRAWIO_OPENAI_API_KEY', 'OPENAI_API_KEY', 'DRAWIO_AI_API_KEY')
+  ) || '').trim();
+  const model = String(config.model || (
+    format === 'anthropic' ?
+      findEnv('DRAWIO_AI_ANTHROPIC_MODEL', 'DRAWIO_ANTHROPIC_MODEL', 'ANTHROPIC_MODEL', 'DRAWIO_AI_MODEL') :
+      findEnv('DRAWIO_AI_OPENAI_MODEL', 'DRAWIO_OPENAI_MODEL', 'OPENAI_MODEL', 'DRAWIO_AI_MODEL')
+  ) || '').trim();
+  const maxTokens = clampNumber(
+    config.maxTokens != null ? config.maxTokens : findEnv('DRAWIO_AI_MAX_TOKENS'),
+    800,
+    8000,
+    2200
+  );
+  const temperature = clampNumber(
+    config.temperature != null ? config.temperature : findEnv('DRAWIO_AI_TEMPERATURE'),
+    0,
+    1,
+    0.2
+  );
+
+  if (!apiKey) {
+    throw publicError(400, 'ai_api_key_required', 'AI API key is required.');
+  }
+
+  if (!model) {
+    throw publicError(400, 'ai_model_required', 'AI model is required.');
+  }
+
+  return { format, baseUrl, baseUrlSource: baseUrlConfig.source, apiKey, model, maxTokens, temperature };
+}
+
+function buildFlowchartInstruction(prompt) {
+  return [
+    'Create a concise flowchart from the user request.',
+    'Return only one JSON object. Do not use Markdown fences or explanatory text.',
+    'Schema:',
+    '{"title":"short diagram title","nodes":[{"id":"n1","label":"Start","type":"start|process|decision|data|end"}],"edges":[{"from":"n1","to":"n2","label":"optional"}]}',
+    'Rules:',
+    '- Use 4 to 14 nodes unless the request is extremely small.',
+    '- Keep labels short and action-oriented.',
+    '- Use decision nodes only where a real branch exists.',
+    '- Node ids must be stable ASCII identifiers.',
+    '- Preserve the user language for labels.',
+    '',
+    'User request:',
+    prompt
+  ].join('\n');
+}
+
+function providerErrorMessage(json, fallbackText) {
+  if (json && typeof json === 'object') {
+    if (json.error && typeof json.error.message === 'string') {
+      return json.error.message;
+    }
+
+    if (typeof json.message === 'string') {
+      return json.message;
+    }
+  }
+
+  return String(fallbackText || '').slice(0, 240) || 'AI provider returned an error.';
+}
+
+async function fetchAiProvider(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, AI_TIMEOUT_MS));
+
+  try {
+    return await fetchCompat(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw publicError(504, 'ai_provider_timeout', 'AI provider request timed out.');
+    }
+
+    throw publicError(502, 'ai_provider_unreachable', 'AI provider is unreachable.');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readProviderJson(upstream) {
+  const text = await upstream.text();
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch (_err) {
+    if (upstream.ok) {
+      throw publicError(502, 'ai_invalid_response', 'AI provider returned non-JSON content.');
+    }
+  }
+
+  if (!upstream.ok) {
+    throw publicError(502, 'ai_provider_error', providerErrorMessage(json, text), {
+      providerStatus: upstream.status
+    });
+  }
+
+  if (!json || typeof json !== 'object') {
+    throw publicError(502, 'ai_invalid_response', 'AI provider response is empty.');
+  }
+
+  return json;
+}
+
+function textFromContentParts(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+
+      if (part && typeof part.text === 'string') {
+        return part.text;
+      }
+
+      if (part && part.type === 'text' && typeof part.content === 'string') {
+        return part.content;
+      }
+
+      return '';
+    }).join('\n').trim();
+  }
+
+  return '';
+}
+
+async function requestOpenAiFlowchart(prompt, config) {
+  const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'chat/completions'), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+      messages: [
+        {
+          role: 'system',
+          content: 'You convert user requirements into clean flowchart JSON for draw.io. Return valid JSON only.'
+        },
+        {
+          role: 'user',
+          content: buildFlowchartInstruction(prompt)
+        }
+      ]
+    })
+  });
+  const json = await readProviderJson(upstream);
+  const choice = Array.isArray(json.choices) ? json.choices[0] : null;
+  const content = choice && choice.message ? textFromContentParts(choice.message.content) : '';
+
+  if (!content) {
+    throw publicError(502, 'ai_invalid_response', 'AI provider did not return message content.');
+  }
+
+  return content;
+}
+
+async function requestAnthropicFlowchart(prompt, config) {
+  const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'messages'), {
+    method: 'POST',
+    headers: {
+      'x-api-key': config.apiKey,
+      'anthropic-version': process.env.DRAWIO_AI_ANTHROPIC_VERSION || '2023-06-01',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: config.maxTokens,
+      temperature: config.temperature,
+      system: 'You convert user requirements into clean flowchart JSON for draw.io. Return valid JSON only.',
+      messages: [
+        {
+          role: 'user',
+          content: buildFlowchartInstruction(prompt)
+        }
+      ]
+    })
+  });
+  const json = await readProviderJson(upstream);
+  const content = textFromContentParts(json.content);
+
+  if (!content) {
+    throw publicError(502, 'ai_invalid_response', 'AI provider did not return message content.');
+  }
+
+  return content;
+}
+
+async function requestAiFlowchart(prompt, config) {
+  if (config.format === 'anthropic') {
+    return requestAnthropicFlowchart(prompt, config);
+  }
+
+  return requestOpenAiFlowchart(prompt, config);
+}
+
+function parseAiJsonObject(text) {
+  const trimmed = String(text || '').trim();
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = fence ? fence[1].trim() : trimmed;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+
+  if (start < 0 || end <= start) {
+    throw publicError(502, 'ai_response_not_json', 'AI response did not include a JSON object.');
+  }
+
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch (_err) {
+    throw publicError(502, 'ai_response_not_json', 'AI response JSON could not be parsed.');
+  }
+}
+
+function sanitizeDiagramText(value, fallback, maxLength = 80) {
+  const text = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return (text || fallback).slice(0, maxLength);
+}
+
+function normalizeNodeId(value, index, used) {
+  const base = String(value || `n${index + 1}`)
+    .replace(/[^A-Za-z0-9_-]/g, '')
+    .slice(0, 36) || `n${index + 1}`;
+  let id = base;
+  let suffix = 2;
+
+  while (used.has(id)) {
+    id = `${base}_${suffix}`;
+    suffix += 1;
+  }
+
+  used.add(id);
+  return id;
+}
+
+function normalizeNodeType(value, index, total) {
+  const type = String(value || '').trim().toLowerCase();
+
+  if (AI_NODE_TYPES.has(type)) {
+    return type;
+  }
+
+  if (index === 0) {
+    return 'start';
+  }
+
+  if (index === total - 1) {
+    return 'end';
+  }
+
+  return 'process';
+}
+
+function normalizeFlowchartSpec(raw, prompt) {
+  const nodesInput = Array.isArray(raw && raw.nodes) ? raw.nodes.slice(0, 24) : [];
+
+  if (nodesInput.length < 2) {
+    throw publicError(502, 'ai_flowchart_too_small', 'AI response did not include enough flowchart nodes.');
+  }
+
+  const used = new Set();
+  const rawIdMap = new Map();
+  const nodes = nodesInput.map((node, index) => {
+    const rawId = String(node && node.id ? node.id : `n${index + 1}`);
+    const id = normalizeNodeId(rawId, index, used);
+
+    if (!rawIdMap.has(rawId)) {
+      rawIdMap.set(rawId, id);
+    }
+
+    return {
+      id,
+      label: sanitizeDiagramText(node && node.label, `Step ${index + 1}`),
+      type: normalizeNodeType(node && node.type, index, nodesInput.length)
+    };
+  });
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = [];
+  const edgeInputs = Array.isArray(raw && raw.edges) ? raw.edges.slice(0, 48) : [];
+
+  for (const edge of edgeInputs) {
+    const from = rawIdMap.get(String(edge && edge.from)) || String(edge && edge.from || '');
+    const to = rawIdMap.get(String(edge && edge.to)) || String(edge && edge.to || '');
+
+    if (nodeIds.has(from) && nodeIds.has(to) && from !== to) {
+      edges.push({
+        from,
+        to,
+        label: sanitizeDiagramText(edge && edge.label, '', 24)
+      });
+    }
+  }
+
+  if (!edges.length) {
+    for (let index = 0; index < nodes.length - 1; index += 1) {
+      edges.push({ from: nodes[index].id, to: nodes[index + 1].id, label: '' });
+    }
+  }
+
+  return {
+    title: sanitizeDiagramText(raw && raw.title, sanitizeDiagramText(prompt, 'AI flowchart', 32), 64),
+    nodes,
+    edges
+  };
+}
+
+function escapeXml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&apos;'
+  })[ch]);
+}
+
+function nodeStyle(type) {
+  const common = 'whiteSpace=wrap;html=1;strokeWidth=2;fontColor=#17211f;spacing=10;';
+
+  if (type === 'start') {
+    return `${common}ellipse;fillColor=#e0f1ec;strokeColor=#147866;`;
+  }
+
+  if (type === 'end') {
+    return `${common}ellipse;fillColor=#f9edda;strokeColor=#b16f18;`;
+  }
+
+  if (type === 'decision') {
+    return `${common}rhombus;fillColor=#edf4ff;strokeColor=#215fbd;`;
+  }
+
+  if (type === 'data') {
+    return `${common}shape=parallelogram;perimeter=parallelogramPerimeter;fixedSize=1;fillColor=#fff7ed;strokeColor=#b16f18;`;
+  }
+
+  return `${common}rounded=1;arcSize=10;fillColor=#fffdf8;strokeColor=#215fbd;`;
+}
+
+function renderFlowchartXml(spec) {
+  const width = 190;
+  const height = 70;
+  const startX = 320;
+  const startY = 70;
+  const gapY = 122;
+  const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
+  const nodeCellIds = new Map();
+
+  spec.nodes.forEach((node, index) => {
+    const cellId = `ai_node_${node.id}`;
+    const nodeHeight = node.type === 'decision' ? 92 : height;
+    const nodeWidth = node.type === 'decision' ? 172 : width;
+    const x = startX + (node.type === 'data' ? -8 : 0);
+    const y = startY + index * gapY;
+
+    nodeCellIds.set(node.id, cellId);
+    cells.push([
+      `<mxCell id="${escapeXml(cellId)}" value="${escapeXml(node.label)}" style="${escapeXml(nodeStyle(node.type))}" vertex="1" parent="1">`,
+      `<mxGeometry x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" as="geometry"/>`,
+      '</mxCell>'
+    ].join(''));
+  });
+
+  spec.edges.forEach((edge, index) => {
+    const source = nodeCellIds.get(edge.from);
+    const target = nodeCellIds.get(edge.to);
+
+    if (!source || !target) {
+      return;
+    }
+
+    cells.push([
+      `<mxCell id="ai_edge_${index + 1}" value="${escapeXml(edge.label)}" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#66746f;fontColor=#53645f;" edge="1" parent="1" source="${escapeXml(source)}" target="${escapeXml(target)}">`,
+      '<mxGeometry relative="1" as="geometry"/>',
+      '</mxCell>'
+    ].join(''));
+  });
+
+  const pageHeight = Math.max(1169, startY + spec.nodes.length * gapY + 120);
+
+  return [
+    `<mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="${pageHeight}" math="0" shadow="0">`,
+    '<root>',
+    cells.join(''),
+    '</root>',
+    '</mxGraphModel>'
+  ].join('');
+}
+
+async function handleAiFlowchart(req, res, session) {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res, 'POST');
+    return;
+  }
+
+  let payload;
+
+  try {
+    payload = await readJsonBody(req);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.code || 'invalid_json' });
+    return;
+  }
+
+  try {
+    const prompt = String(payload.prompt || '').trim();
+
+    if (!prompt) {
+      throw publicError(400, 'prompt_required', 'Prompt is required.');
+    }
+
+    if (prompt.length > MAX_AI_PROMPT_CHARS) {
+      throw publicError(413, 'prompt_too_large', 'Prompt is too long.');
+    }
+
+    const config = normalizeAiConfig(payload.config || {});
+    await assertAiBaseUrlAllowed(config);
+    const aiText = await requestAiFlowchart(prompt, config);
+    const rawSpec = parseAiJsonObject(aiText);
+    const spec = normalizeFlowchartSpec(rawSpec, prompt);
+    const xml = renderFlowchartXml(spec);
+
+    sendJson(res, 200, {
+      diagram: {
+        title: spec.title,
+        nodeCount: spec.nodes.length,
+        edgeCount: spec.edges.length
+      },
+      provider: {
+        format: config.format,
+        baseUrl: config.baseUrl,
+        model: config.model
+      },
+      generatedBy: session.employeeId,
+      xml
+    });
+  } catch (err) {
+    sendJson(res, err.status || 500, {
+      error: err.code || 'internal_server_error',
+      message: err.publicMessage || 'Unable to generate flowchart.',
+      providerStatus: err.providerStatus || null
+    });
+  }
+}
+
+function securityHeaders(headers = {}) {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    ...headers
+  };
+}
+
 function sendJson(res, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
 
-  res.writeHead(status, {
+  res.writeHead(status, securityHeaders({
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store, max-age=0',
-    'X-Content-Type-Options': 'nosniff',
     ...headers
-  });
+  }));
   res.end(body);
 }
 
 function sendText(res, status, text, headers = {}) {
-  res.writeHead(status, {
+  res.writeHead(status, securityHeaders({
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store, max-age=0',
-    'X-Content-Type-Options': 'nosniff',
     ...headers
-  });
+  }));
   res.end(text);
 }
 
 function sendDownload(res, body, filename, contentType) {
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''), 'utf8');
 
-  res.writeHead(200, {
+  res.writeHead(200, securityHeaders({
     'Content-Type': contentType,
     'Content-Length': buffer.length,
     'Content-Disposition': contentDisposition(filename),
-    'Cache-Control': 'no-store, max-age=0',
-    'X-Content-Type-Options': 'nosniff'
-  });
+    'Cache-Control': 'no-store, max-age=0'
+  }));
   res.end(buffer);
 }
 
 function redirect(res, location) {
-  res.writeHead(302, {
+  res.writeHead(302, securityHeaders({
     Location: location,
     'Cache-Control': 'no-store, max-age=0'
-  });
+  }));
   res.end();
 }
 
@@ -749,7 +2563,19 @@ function methodNotAllowed(res, allow = 'GET, POST') {
   sendJson(res, 405, { error: 'method_not_allowed' }, { Allow: allow });
 }
 
+function hasJsonContentType(req) {
+  const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  return contentType === 'application/json' || contentType.endsWith('+json');
+}
+
 async function readJsonBody(req) {
+  if (!hasJsonContentType(req)) {
+    const err = new Error('Unsupported media type');
+    err.status = 415;
+    err.code = 'unsupported_media_type';
+    throw err;
+  }
+
   const chunks = [];
   let size = 0;
 
@@ -874,7 +2700,7 @@ async function handleExportProxy(req, res, pathname, search) {
   let upstream;
 
   try {
-    upstream = await fetch(target, {
+    upstream = await fetchCompat(target, {
       method: req.method,
       headers: proxyHeaders(req),
       body
@@ -885,12 +2711,11 @@ async function handleExportProxy(req, res, pathname, search) {
   }
 
   const upstreamBody = Buffer.from(await upstream.arrayBuffer());
-  const headers = {
+  const headers = securityHeaders({
     'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
     'Content-Length': upstreamBody.length,
-    'Cache-Control': 'no-store, max-age=0',
-    'X-Content-Type-Options': 'nosniff'
-  };
+    'Cache-Control': 'no-store, max-age=0'
+  });
   const disposition = upstream.headers.get('content-disposition');
 
   if (disposition) {
@@ -920,14 +2745,36 @@ function safeNext(value) {
 }
 
 function getRequestPath(req) {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const url = new URL(req.url, `http://${requestHost(req)}`);
   return decodeURIComponent(url.pathname);
 }
 
+function firstHeaderValue(value) {
+  return String(Array.isArray(value) ? value[0] : value || '').split(',')[0].trim();
+}
+
+function trustedHeader(req, name) {
+  return TRUST_PROXY ? firstHeaderValue(req.headers[name]) : '';
+}
+
+function requestHost(req) {
+  const rawHost = trustedHeader(req, 'x-forwarded-host') || firstHeaderValue(req.headers.host) || `127.0.0.1:${PORT}`;
+  const host = rawHost.replace(/[\r\n]/g, '').trim();
+
+  if (/^[A-Za-z0-9._:\-[\]]+$/.test(host)) {
+    return host;
+  }
+
+  return `127.0.0.1:${PORT}`;
+}
+
+function requestProto(req) {
+  const proto = (trustedHeader(req, 'x-forwarded-proto') || 'http').toLowerCase();
+  return proto === 'https' ? 'https' : 'http';
+}
+
 function externalBaseUrl(req) {
-  const proto = req.headers['x-forwarded-proto'] || 'http';
-  const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${PORT}`;
-  return `${proto}://${host}`;
+  return `${requestProto(req)}://${requestHost(req)}`;
 }
 
 function timingSafeEqualText(left, right) {
@@ -958,8 +2805,99 @@ function sanitizeLogPath(pathname) {
 }
 
 function clientAddress(req) {
-  const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const forwardedFor = trustedHeader(req, 'x-forwarded-for');
   return forwardedFor || req.socket.remoteAddress || '';
+}
+
+function isStateChangingMethod(method) {
+  return !['GET', 'HEAD', 'OPTIONS'].includes(String(method || '').toUpperCase());
+}
+
+function isSameOriginRequest(req) {
+  const site = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+
+  if (site && !['same-origin', 'same-site', 'none'].includes(site)) {
+    return false;
+  }
+
+  const origin = firstHeaderValue(req.headers.origin);
+
+  if (!origin) {
+    return true;
+  }
+
+  try {
+    return new URL(origin).origin === `${requestProto(req)}://${requestHost(req)}`;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function rejectCrossSiteMutation(req, res) {
+  if (isStateChangingMethod(req.method) && !isSameOriginRequest(req)) {
+    sendJson(res, 403, { error: 'cross_site_request_rejected' });
+    return true;
+  }
+
+  return false;
+}
+
+function authRateKey(req, scope, subject) {
+  return `${scope}:${clientAddress(req)}:${String(subject || '').toLowerCase()}`;
+}
+
+function authRateWindowMs() {
+  return Math.max(1000, Number.isFinite(AUTH_RATE_LIMIT_WINDOW_MS) ? AUTH_RATE_LIMIT_WINDOW_MS : 15 * 60 * 1000);
+}
+
+function authRateMax(value) {
+  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : 20);
+}
+
+function currentAuthRateRecord(key, now = Date.now()) {
+  let record = authRateLimits.get(key);
+
+  if (!record || record.resetAt <= now) {
+    record = { count: 0, resetAt: now + authRateWindowMs() };
+    authRateLimits.set(key, record);
+  }
+
+  return record;
+}
+
+function authRateRetryAfterSeconds(key, maxAttempts) {
+  const max = authRateMax(maxAttempts);
+
+  if (max === 0) {
+    return 0;
+  }
+
+  const now = Date.now();
+  const record = currentAuthRateRecord(key, now);
+
+  if (record.count < max) {
+    return 0;
+  }
+
+  return Math.max(1, Math.ceil((record.resetAt - now) / 1000));
+}
+
+function recordAuthFailure(key) {
+  const record = currentAuthRateRecord(key);
+  record.count += 1;
+}
+
+function clearAuthFailures(key) {
+  authRateLimits.delete(key);
+}
+
+function sendRateLimited(res, retryAfterSeconds) {
+  sendJson(res, 429, {
+    error: 'too_many_attempts',
+    retryAfterSeconds
+  }, {
+    'Retry-After': retryAfterSeconds
+  });
 }
 
 function writeAccessLog(req, res, startTime, pathname) {
@@ -1017,13 +2955,11 @@ async function serveFile(req, res, filePath) {
       'no-store, max-age=0' :
       'public, max-age=3600';
 
-    res.writeHead(200, {
+    res.writeHead(200, securityHeaders({
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
       'Content-Length': stat.size,
-      'Cache-Control': cache,
-      'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'same-origin'
-    });
+      'Cache-Control': cache
+    }));
 
     if (req.method === 'HEAD') {
       res.end();
@@ -1048,7 +2984,14 @@ function isHtmlRequest(req, pathname) {
 }
 
 function publicPagePath(pathname) {
-  if (pathname === '/login.html' || pathname === '/app.html' || pathname === '/editor.html' || pathname === '/share.html') {
+  if (
+    pathname === '/login.html' ||
+    pathname === '/register.html' ||
+    pathname === '/app.html' ||
+    pathname === '/admin.html' ||
+    pathname === '/editor.html' ||
+    pathname === '/share.html'
+  ) {
     return path.join(PUBLIC_DIR, pathname.slice(1));
   }
 
@@ -1097,20 +3040,297 @@ async function handleLogin(req, res) {
     return;
   }
 
-  if (password !== TEMP_PASSWORD) {
+  const rateKey = authRateKey(req, 'login', employeeId);
+  const retryAfterSeconds = authRateRetryAfterSeconds(rateKey, LOGIN_RATE_LIMIT_MAX);
+
+  if (retryAfterSeconds) {
+    sendRateLimited(res, retryAfterSeconds);
+    return;
+  }
+
+  await ensureAccountsLoaded();
+  const account = getAccount(employeeId);
+
+  if (!account || account.status === 'pending' || !verifyPasswordRecord(account, password)) {
+    recordAuthFailure(rateKey);
     sendJson(res, 401, { error: 'invalid_credentials' });
     return;
   }
 
-  const session = await createSession(employeeId);
+  if (account.status === 'disabled') {
+    sendJson(res, 403, { error: 'account_disabled' });
+    return;
+  }
+
+  clearAuthFailures(rateKey);
+  const session = await createSession(account.employeeId);
 
   sendJson(res, 200, {
     authenticated: true,
-    employeeId,
+    employeeId: account.employeeId,
+    role: account.role,
+    canAdmin: isAdminAccount(account),
     expiresAt: session.expiresAt
   }, {
     'Set-Cookie': buildCookie(session.token, { maxAge: Math.floor(SESSION_TTL_MS / 1000) })
   });
+}
+
+async function handleRegister(req, res) {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res, 'POST');
+    return;
+  }
+
+  let payload;
+
+  try {
+    payload = await readJsonBody(req);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.code || 'invalid_json' });
+    return;
+  }
+
+  const employeeId = normalizeEmployeeId(payload.employeeId);
+  const password = String(payload.password || '');
+  const inviteCode = normalizeInviteCode(payload.inviteCode);
+
+  if (!isValidEmployeeId(employeeId)) {
+    sendJson(res, 400, { error: 'invalid_employee_id' });
+    return;
+  }
+
+  if (!isValidInviteCode(inviteCode)) {
+    sendJson(res, 400, { error: 'invalid_invite_code' });
+    return;
+  }
+
+  if (!isValidPassword(password)) {
+    sendJson(res, 400, { error: 'weak_password', minLength: MIN_PASSWORD_CHARS });
+    return;
+  }
+
+  const rateKey = authRateKey(req, 'register', employeeId);
+  const retryAfterSeconds = authRateRetryAfterSeconds(rateKey, REGISTER_RATE_LIMIT_MAX);
+
+  if (retryAfterSeconds) {
+    sendRateLimited(res, retryAfterSeconds);
+    return;
+  }
+
+  await ensureAccountsLoaded();
+  const account = accounts.get(employeeId);
+
+  if (!account || account.status !== 'pending' || !verifyInviteCode(account, inviteCode)) {
+    recordAuthFailure(rateKey);
+    sendJson(res, 401, { error: 'invalid_invite_code' });
+    return;
+  }
+
+  const time = nowIso();
+  const name = sanitizeProfileName(payload.name || account.name);
+  Object.assign(account, createPasswordRecord(password), {
+    name,
+    displayName: name || employeeId,
+    status: 'active',
+    inviteCode: '',
+    inviteCodeHash: '',
+    inviteCodePreview: '',
+    inviteAcceptedAt: time,
+    registeredAt: time,
+    updatedAt: time,
+    updatedBy: employeeId
+  });
+
+  accounts.set(employeeId, account);
+  await saveAccounts();
+  await writeEmployeeProfile(employeeId, name);
+  clearAuthFailures(rateKey);
+
+  const session = await createSession(employeeId);
+
+  sendJson(res, 201, {
+    authenticated: true,
+    account: accountSummary(account),
+    expiresAt: session.expiresAt
+  }, {
+    'Set-Cookie': buildCookie(session.token, { maxAge: Math.floor(SESSION_TTL_MS / 1000) })
+  });
+}
+
+async function handleAdminAccounts(req, res, session) {
+  await ensureAccountsLoaded();
+
+  if (req.method === 'GET') {
+    sendJson(res, 200, { accounts: listAccountSummaries() });
+    return;
+  }
+
+  if (req.method === 'POST') {
+    try {
+      const payload = await readJsonBody(req);
+      const created = await createPendingAccount(payload, session.employeeId);
+
+      sendJson(res, 201, {
+        account: accountSummary(created.account, { inviteCode: created.inviteCode })
+      });
+    } catch (err) {
+      sendJson(res, err.status || 500, {
+        error: err.code || 'internal_server_error',
+        message: err.publicMessage || 'Unable to create account.'
+      });
+    }
+
+    return;
+  }
+
+  methodNotAllowed(res, 'GET, POST');
+}
+
+async function handleAdminBatchAccounts(req, res, session) {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res, 'POST');
+    return;
+  }
+
+  let payload;
+
+  try {
+    payload = await readJsonBody(req);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.code || 'invalid_json' });
+    return;
+  }
+
+  const rows = parseBatchAccounts(payload);
+
+  if (!rows.length) {
+    sendJson(res, 400, { error: 'batch_empty' });
+    return;
+  }
+
+  if (rows.length > MAX_BATCH_ACCOUNTS) {
+    sendJson(res, 413, { error: 'batch_too_large', max: MAX_BATCH_ACCOUNTS });
+    return;
+  }
+
+  const created = [];
+  const errors = [];
+
+  for (const row of rows) {
+    try {
+      const result = await createPendingAccount(row, session.employeeId, { save: false });
+      created.push(accountSummary(result.account, {
+        inviteCode: result.inviteCode,
+        line: row.index + 1
+      }));
+    } catch (err) {
+      errors.push({
+        line: row.index + 1,
+        employeeId: normalizeEmployeeId(row.employeeId),
+        error: err.code || 'internal_server_error'
+      });
+    }
+  }
+
+  if (created.length) {
+    await saveAccounts();
+  }
+
+  sendJson(res, created.length ? 201 : 400, { created, errors });
+}
+
+async function handleAdminAccountItem(req, res, session, employeeId, action) {
+  await ensureAccountsLoaded();
+
+  if (!isValidEmployeeId(employeeId)) {
+    sendJson(res, 400, { error: 'invalid_employee_id' });
+    return;
+  }
+
+  const account = accounts.get(employeeId);
+  const envAdmin = envAdminAccount();
+
+  if (employeeId === envAdmin.employeeId && !account) {
+    sendJson(res, 409, { error: 'environment_admin_readonly' });
+    return;
+  }
+
+  if (!account) {
+    sendJson(res, 404, { error: 'account_not_found' });
+    return;
+  }
+
+  if (action === 'invite') {
+    if (req.method !== 'POST') {
+      methodNotAllowed(res, 'POST');
+      return;
+    }
+
+    if (account.status !== 'pending') {
+      sendJson(res, 409, { error: 'account_already_registered' });
+      return;
+    }
+
+    const inviteCode = assignInviteCode(account, session.employeeId);
+    await saveAccounts();
+    sendJson(res, 200, { account: accountSummary(account, { inviteCode }) });
+    return;
+  }
+
+  if (action) {
+    notFound(res);
+    return;
+  }
+
+  if (req.method === 'PATCH') {
+    let payload;
+
+    try {
+      payload = await readJsonBody(req);
+    } catch (err) {
+      sendJson(res, err.status || 400, { error: err.code || 'invalid_json' });
+      return;
+    }
+
+    const nextRole = payload.role == null ? account.role : normalizeAccountRole(payload.role);
+    const nextStatus = payload.status == null ? account.status : normalizeAccountStatus(payload.status);
+
+    if (employeeId === session.employeeId && (nextRole !== 'admin' || nextStatus !== 'active')) {
+      sendJson(res, 409, { error: 'cannot_lock_self' });
+      return;
+    }
+
+    if (nextStatus === 'active' && !account.passwordHash) {
+      sendJson(res, 409, { error: 'account_not_registered' });
+      return;
+    }
+
+    account.name = payload.name == null ? account.name : sanitizeProfileName(payload.name);
+    account.displayName = account.name || account.employeeId;
+    account.role = nextRole;
+    account.status = nextStatus;
+    account.updatedAt = nowIso();
+    account.updatedBy = session.employeeId;
+    await saveAccounts();
+    await writeEmployeeProfile(account.employeeId, account.name);
+    sendJson(res, 200, { account: accountSummary(account) });
+    return;
+  }
+
+  if (req.method === 'DELETE') {
+    if (employeeId === session.employeeId) {
+      sendJson(res, 409, { error: 'cannot_delete_self' });
+      return;
+    }
+
+    accounts.delete(employeeId);
+    await saveAccounts();
+    sendJson(res, 200, { deleted: true });
+    return;
+  }
+
+  methodNotAllowed(res, 'PATCH, DELETE');
 }
 
 async function handleApi(req, res, pathname) {
@@ -1131,6 +3351,11 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/login') {
     await handleLogin(req, res);
+    return;
+  }
+
+  if (pathname === '/api/register') {
+    await handleRegister(req, res);
     return;
   }
 
@@ -1206,9 +3431,17 @@ async function handleApi(req, res, pathname) {
     }
 
     const session = getSession(req);
-    sendJson(res, 200, session ? {
+    const account = await getSessionAccount(session);
+    const isActive = Boolean(account && account.status === 'active');
+    const profile = isActive ? await readEmployeeProfile(session.employeeId) : null;
+
+    sendJson(res, 200, isActive ? {
       authenticated: true,
       employeeId: session.employeeId,
+      name: profile.name,
+      displayName: profile.displayName,
+      role: account.role,
+      canAdmin: isAdminAccount(account),
       expiresAt: session.expiresAt
     } : {
       authenticated: false
@@ -1250,6 +3483,308 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  const account = await getSessionAccount(session);
+
+  if (!account || account.status !== 'active') {
+    sendJson(res, 401, { error: 'not_authenticated' }, { 'Set-Cookie': clearCookie() });
+    return;
+  }
+
+  if (pathname === '/api/admin/accounts') {
+    if (!isAdminAccount(account)) {
+      sendJson(res, 403, { error: 'not_authorized' });
+      return;
+    }
+
+    await handleAdminAccounts(req, res, session);
+    return;
+  }
+
+  if (pathname === '/api/admin/accounts/batch') {
+    if (!isAdminAccount(account)) {
+      sendJson(res, 403, { error: 'not_authorized' });
+      return;
+    }
+
+    await handleAdminBatchAccounts(req, res, session);
+    return;
+  }
+
+  const adminAccountMatch = pathname.match(/^\/api\/admin\/accounts\/([^/]+)(?:\/([^/]+))?$/);
+
+  if (adminAccountMatch) {
+    if (!isAdminAccount(account)) {
+      sendJson(res, 403, { error: 'not_authorized' });
+      return;
+    }
+
+    await handleAdminAccountItem(req, res, session, adminAccountMatch[1], adminAccountMatch[2] || null);
+    return;
+  }
+
+  if (pathname === '/api/ai/flowchart') {
+    await handleAiFlowchart(req, res, session);
+    return;
+  }
+
+  if (pathname === '/api/profile') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, { profile: await readEmployeeProfile(session.employeeId) });
+      return;
+    }
+
+    if (req.method === 'PUT') {
+      try {
+        const payload = await readJsonBody(req);
+        const profile = await writeEmployeeProfile(session.employeeId, payload.name);
+        sendJson(res, 200, { profile });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    methodNotAllowed(res, 'GET, PUT');
+    return;
+  }
+
+  if (pathname === '/api/employees') {
+    if (req.method !== 'GET') {
+      methodNotAllowed(res, 'GET');
+      return;
+    }
+
+    sendJson(res, 200, { employees: await listKnownEmployees(session.employeeId) });
+    return;
+  }
+
+  if (pathname === '/api/internal-shares') {
+    if (req.method !== 'GET') {
+      methodNotAllowed(res, 'GET');
+      return;
+    }
+
+    sendJson(res, 200, { shares: await listInternalShares(session.employeeId) });
+    return;
+  }
+
+  const internalShareMatch = pathname.match(/^\/api\/internal-shares\/([^/]+)(?:\/([^/]+))?$/);
+
+  if (internalShareMatch) {
+    const shareId = internalShareMatch[1];
+    const action = internalShareMatch[2] || null;
+
+    if (!isValidFileId(shareId)) {
+      sendJson(res, 400, { error: 'invalid_share_id' });
+      return;
+    }
+
+    if (action === null) {
+      if (req.method !== 'GET') {
+        methodNotAllowed(res, 'GET');
+        return;
+      }
+
+      const shared = await getInternalShareForEmployee(session.employeeId, shareId);
+
+      if (!shared || !shared.file) {
+        sendJson(res, 404, { error: 'internal_share_not_found' });
+        return;
+      }
+
+      await markInternalShareRead(session.employeeId, shared.share);
+
+      sendJson(res, 200, {
+        share: await internalShareSummary(shared.share, shared.file, session.employeeId),
+        messages: shared.share.messages,
+        xml: shared.file.xml
+      });
+      return;
+    }
+
+    if (action === 'messages') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const updated = await addInternalShareMessage(session.employeeId, shareId, payload.message);
+
+        if (!updated || !updated.file) {
+          sendJson(res, 404, { error: 'internal_share_not_found' });
+          return;
+        }
+
+        sendJson(res, 200, {
+          share: await internalShareSummary(updated.share, updated.file, session.employeeId),
+          messages: updated.share.messages,
+          message: updated.message
+        });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    if (action === 'download') {
+      if (req.method !== 'GET') {
+        methodNotAllowed(res, 'GET');
+        return;
+      }
+
+      const shared = await getInternalShareForEmployee(session.employeeId, shareId);
+
+      if (!shared || !shared.file) {
+        sendJson(res, 404, { error: 'internal_share_not_found' });
+        return;
+      }
+
+      sendDownload(
+        res,
+        shared.file.xml,
+        attachmentName(shared.file.meta.name, '.drawio'),
+        'application/xml; charset=utf-8'
+      );
+      return;
+    }
+
+    notFound(res);
+    return;
+  }
+
+  if (pathname === '/api/folders') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, { folders: await listFolders(session.employeeId) });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      try {
+        const payload = await readJsonBody(req);
+        const folder = await createFolder(session.employeeId, payload.name, payload.parentId);
+        sendJson(res, 201, { folder: folderSummary(folder) });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    methodNotAllowed(res, 'GET, POST');
+    return;
+  }
+
+  const folderMatch = pathname.match(/^\/api\/folders\/([^/]+)(?:\/([^/]+))?$/);
+
+  if (folderMatch) {
+    const folderId = folderMatch[1];
+    const action = folderMatch[2] || null;
+
+    if (!isValidFolderId(folderId)) {
+      sendJson(res, 400, { error: 'invalid_folder_id' });
+      return;
+    }
+
+    if (action === null) {
+      if (req.method === 'GET') {
+        const folder = await readFolder(session.employeeId, folderId);
+
+        if (!folder) {
+          sendJson(res, 404, { error: 'folder_not_found' });
+          return;
+        }
+
+        sendJson(res, 200, { folder: folderSummary(folder) });
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        const deleted = await deleteFolder(session.employeeId, folderId);
+        sendJson(res, deleted ? 200 : 404, deleted ? { deleted: true } : { error: 'folder_not_found' });
+        return;
+      }
+
+      methodNotAllowed(res, 'GET, DELETE');
+      return;
+    }
+
+    if (action === 'rename') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const folder = await renameFolder(session.employeeId, folderId, payload.name);
+
+        if (!folder) {
+          sendJson(res, 404, { error: 'folder_not_found' });
+          return;
+        }
+
+        sendJson(res, 200, { folder: folderSummary(folder) });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    if (action === 'move') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const folder = await moveFolder(session.employeeId, folderId, payload.parentId);
+
+        if (!folder) {
+          sendJson(res, 404, { error: 'folder_not_found' });
+          return;
+        }
+
+        sendJson(res, 200, { folder: folderSummary(folder) });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    if (action === 'copy') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const folder = await copyFolder(session.employeeId, folderId, payload.parentId);
+
+        if (!folder) {
+          sendJson(res, 404, { error: 'folder_not_found' });
+          return;
+        }
+
+        sendJson(res, 201, { folder: folderSummary(folder) });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    notFound(res);
+    return;
+  }
+
   if (pathname === '/api/files') {
     if (req.method === 'GET') {
       sendJson(res, 200, { files: await listFiles(session.employeeId) });
@@ -1266,8 +3801,12 @@ async function handleApi(req, res, pathname) {
         return;
       }
 
-      const created = await createFile(session.employeeId, payload.name, payload.xml);
-      sendJson(res, 201, { file: fileSummary(created.meta), xml: created.xml });
+      try {
+        const created = await createFile(session.employeeId, payload.name, payload.xml, payload.folderId);
+        sendJson(res, 201, { file: fileSummary(created.meta), xml: created.xml });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
       return;
     }
 
@@ -1377,6 +3916,52 @@ async function handleApi(req, res, pathname) {
       return;
     }
 
+    if (action === 'move') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const moved = await moveFile(session.employeeId, fileId, payload.folderId);
+
+        if (!moved) {
+          sendJson(res, 404, { error: 'file_not_found' });
+          return;
+        }
+
+        sendJson(res, 200, { file: fileSummary(moved) });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
+    if (action === 'copy') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const copied = await copyFile(session.employeeId, fileId, payload.folderId);
+
+        if (!copied) {
+          sendJson(res, 404, { error: 'file_not_found' });
+          return;
+        }
+
+        sendJson(res, 201, { file: fileSummary(copied.meta) });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
     if (action === 'share') {
       if (req.method !== 'POST') {
         methodNotAllowed(res, 'POST');
@@ -1409,6 +3994,32 @@ async function handleApi(req, res, pathname) {
       return;
     }
 
+    if (action === 'share-internal') {
+      if (req.method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const shared = await createInternalShare(session.employeeId, fileId, payload.recipients, payload.message);
+
+        if (!shared) {
+          sendJson(res, 404, { error: 'file_not_found' });
+          return;
+        }
+
+        sendJson(res, 200, {
+          share: await internalShareSummary(shared.share, shared.file, session.employeeId),
+          messages: shared.share.messages
+        });
+      } catch (err) {
+        sendJson(res, err.status || 500, { error: err.code || 'internal_server_error' });
+      }
+
+      return;
+    }
+
     notFound(res);
     return;
   }
@@ -1422,7 +4033,13 @@ async function handleStatic(req, res, pathname, searchParams) {
     return;
   }
 
-  const session = getSession(req);
+  let session = getSession(req);
+  const account = session ? await getSessionAccount(session) : null;
+
+  if (session && (!account || account.status !== 'active')) {
+    await destroySession(req);
+    session = null;
+  }
 
   if (pathname === '/') {
     redirect(res, session ? '/app.html' : '/login.html');
@@ -1439,8 +4056,36 @@ async function handleStatic(req, res, pathname, searchParams) {
     return;
   }
 
+  if (pathname === '/register.html') {
+    if (session) {
+      redirect(res, safeNext(searchParams.get('next')));
+      return;
+    }
+
+    await serveFile(req, res, path.join(PUBLIC_DIR, 'register.html'));
+    return;
+  }
+
   if (pathname === '/share.html') {
     await serveFile(req, res, path.join(PUBLIC_DIR, 'share.html'));
+    return;
+  }
+
+  if (pathname === '/admin.html') {
+    if (!session) {
+      const next = encodeURIComponent(`${pathname}${searchParams.size ? `?${searchParams}` : ''}`);
+      redirect(res, `/login.html?next=${next}`);
+      return;
+    }
+
+    const account = await getSessionAccount(session);
+
+    if (!isAdminAccount(account)) {
+      redirect(res, '/app.html');
+      return;
+    }
+
+    await serveFile(req, res, path.join(PUBLIC_DIR, 'admin.html'));
     return;
   }
 
@@ -1490,7 +4135,7 @@ async function handleRequest(req, res) {
   });
 
   try {
-    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    url = new URL(req.url, `http://${requestHost(req)}`);
     pathname = getRequestPath(req);
   } catch (_err) {
     sendJson(res, 400, { error: 'bad_request' });
@@ -1498,6 +4143,10 @@ async function handleRequest(req, res) {
   }
 
   try {
+    if (rejectCrossSiteMutation(req, res)) {
+      return;
+    }
+
     if (pathname === '/export' || pathname.startsWith('/export/')) {
       await handleExportProxy(req, res, pathname, url.search);
     } else if (pathname.startsWith('/api/')) {
@@ -1513,15 +4162,46 @@ async function handleRequest(req, res) {
 
 async function main() {
   await ensureDataDirs();
+  await ensureAccountsLoaded();
   await loadSessions();
 
   const server = http.createServer(handleRequest);
 
   server.listen(PORT, HOST, () => {
-    console.log(`Company draw.io server listening at http://${HOST}:${PORT}/`);
+    console.log(`Company draw.io server listening on ${HOST}:${PORT}`);
+
+    if (HOST === '0.0.0.0' || HOST === '::') {
+      console.log(`Local URL: http://127.0.0.1:${PORT}/`);
+
+      const lanUrls = localNetworkUrls(PORT);
+
+      if (lanUrls.length > 0) {
+        console.log(`LAN URLs: ${lanUrls.join(', ')}`);
+      } else {
+        console.log(`LAN URL: http://<your-lan-ip>:${PORT}/`);
+      }
+    } else {
+      console.log(`URL: http://${HOST}:${PORT}/`);
+    }
+
     console.log(`Serving webapp from ${WEBAPP_DIR}`);
     console.log(`Using data directory ${DATA_DIR}`);
   });
+}
+
+function localNetworkUrls(port) {
+  const urls = [];
+  const interfaces = os.networkInterfaces();
+
+  Object.values(interfaces).forEach((entries) => {
+    (entries || []).forEach((entry) => {
+      if (entry && entry.family === 'IPv4' && !entry.internal) {
+        urls.push(`http://${entry.address}:${port}/`);
+      }
+    });
+  });
+
+  return urls;
 }
 
 if (require.main === module) {
@@ -1533,6 +4213,7 @@ if (require.main === module) {
 
 module.exports = {
   EMPTY_DIAGRAM_XML,
+  fetchCompat,
   sanitizeFileName,
   handleRequest,
   getOperationalStatus,

@@ -1,7 +1,0 @@
-
-> company-drawio-server@0.1.0 start
-> node server.js
-
-Company draw.io server listening at http://127.0.0.1:8092/
-Serving webapp from E:\Work\AI\Draw\drawio\src\main\webapp
-Using data directory E:\Work\AI\Draw\drawio\company-server\data

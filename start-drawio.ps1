@@ -1,6 +1,23 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$script = Join-Path $root "serve_drawio.py"
+$server = Join-Path $root "drawio\company-server"
 
-python $script --host 127.0.0.1 --port 8080
+if (-not $env:HOST) {
+    $env:HOST = "127.0.0.1"
+}
+
+if (-not $env:PORT) {
+    $env:PORT = "8081"
+}
+
+Write-Host "Starting Company Draw login server..."
+Write-Host "Login URL: http://127.0.0.1:$env:PORT/login.html"
+
+Push-Location $server
+try {
+    node .\server.js
+}
+finally {
+    Pop-Location
+}

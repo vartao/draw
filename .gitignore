@@ -1,0 +1,15 @@
+# Local editor and agent state
+.idea/
+.agents/
+.vscode/
+
+# Runtime output
+*.log
+*.tmp
+*.bak
+
+# Company server local runtime data
+drawio/company-server/data/
+drawio/company-server/.visual-data/
+drawio/company-server/backups/
+drawio/company-server/*.log

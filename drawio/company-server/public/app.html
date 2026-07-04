@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>我的图纸 - 公司画图工具</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="stylesheet" href="/company.css">
+  <link rel="stylesheet" href="/company.css?v=collab-search-20260704">
 </head>
 <body>
   <div class="shell">
@@ -18,7 +18,12 @@
         </div>
       </div>
       <div class="toolbar">
+        <button id="profileButton" type="button"><span class="btn-icon" aria-hidden="true">名</span><span>设置姓名</span></button>
+        <button id="adminButton" class="hidden" type="button"><span class="btn-icon" aria-hidden="true">管</span><span>账号管理</span></button>
+        <button id="aiToolbarButton" type="button"><span class="btn-icon" aria-hidden="true">AI</span><span>AI 生成</span></button>
         <button id="refreshButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>刷新</span></button>
+        <button id="newFolderButton" type="button"><span class="btn-icon" aria-hidden="true">▣</span><span>新建文件夹</span></button>
+        <button id="pasteButton" type="button" disabled><span class="btn-icon" aria-hidden="true">⎘</span><span>粘贴</span></button>
         <button id="newButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">+</span><span>新建图纸</span></button>
         <button id="logoutButton" type="button"><span class="btn-icon" aria-hidden="true">↪</span><span>退出</span></button>
       </div>
@@ -27,30 +32,187 @@
     <main class="content">
       <section class="panel">
         <div class="panel-header">
-          <h2>文件列表</h2>
+          <div class="file-panel-title">
+            <h2 id="currentFolderTitle">工号根目录</h2>
+            <p id="folderBreadcrumb"></p>
+          </div>
           <div id="status" class="status"></div>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>文件名</th>
-                <th>更新时间</th>
-                <th>大小</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="fileRows"></tbody>
-          </table>
-          <div id="emptyState" class="empty hidden">
-            <div class="empty-mark" aria-hidden="true">+</div>
-            <strong>还没有图纸</strong>
-            <span>新建一张图纸开始工作。</span>
+        <div class="file-browser">
+          <aside class="folder-pane" aria-label="文件夹树">
+            <div class="folder-pane-header">
+              <strong>目录</strong>
+              <span>工号空间</span>
+            </div>
+            <div id="folderTree" class="folder-tree"></div>
+          </aside>
+          <div class="file-pane">
+            <div class="table-wrap">
+              <table class="file-table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>更新时间</th>
+                    <th>大小</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="fileRows"></tbody>
+              </table>
+              <div id="emptyState" class="empty hidden">
+                <div class="empty-mark" aria-hidden="true">▣</div>
+                <strong>当前目录为空</strong>
+                <span>新建图纸或文件夹开始整理。</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel internal-share-panel">
+        <div class="panel-header">
+          <h2>组织分享</h2>
+          <div class="share-panel-tools">
+            <button id="refreshInternalSharesButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>刷新消息</span></button>
+            <div id="internalShareStatus" class="status"></div>
+          </div>
+        </div>
+        <div class="internal-share-layout">
+          <div class="internal-share-list" id="internalShareList"></div>
+          <section class="internal-chat hidden" id="internalChat" aria-label="组织分享聊天">
+            <header class="internal-chat-header">
+              <div>
+                <h3 id="internalChatTitle">选择一个分享</h3>
+                <p id="internalChatMeta"></p>
+              </div>
+              <button id="openInternalShareButton" type="button"><span class="btn-icon" aria-hidden="true">↗</span><span>打开只读</span></button>
+            </header>
+            <div id="internalMessages" class="internal-messages"></div>
+            <div class="internal-message-box">
+              <textarea id="internalMessageInput" rows="3" maxlength="2000" placeholder="写一条消息给同事"></textarea>
+              <button id="sendInternalMessageButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">↵</span><span>发送</span></button>
+            </div>
+          </section>
+          <div id="internalShareEmpty" class="empty internal-share-empty">
+            <div class="empty-mark" aria-hidden="true">↔</div>
+            <strong>还没有组织分享</strong>
+            <span>从文件列表里选择“内部分享”，同事登录后会在这里看到。</span>
           </div>
         </div>
       </section>
     </main>
   </div>
+
+  <button id="aiEntryButton" class="ai-entry" type="button" aria-label="打开 AI 流程图助手">
+    <span aria-hidden="true">AI</span>
+  </button>
+
+  <section id="aiAssistant" class="ai-assistant hidden" aria-labelledby="aiAssistantTitle" aria-modal="true" role="dialog">
+    <div class="ai-panel">
+      <header class="ai-panel-header">
+        <div class="ai-title-block">
+          <div class="ai-mark" aria-hidden="true">AI</div>
+          <div>
+            <h2 id="aiAssistantTitle">AI 流程图助手</h2>
+            <p>输入业务过程，生成可编辑 draw.io 图纸。</p>
+          </div>
+        </div>
+        <button id="aiCloseButton" class="ai-icon-button" type="button" aria-label="关闭 AI 流程图助手">×</button>
+      </header>
+
+      <div class="ai-panel-body">
+        <section class="ai-workbench" aria-label="生成流程图">
+          <label class="ai-field">
+            <span>提示词</span>
+            <textarea id="aiPrompt" rows="8" maxlength="4000" placeholder="例如：为请假审批设计流程，从员工提交申请开始，主管审批后同步人事，驳回时通知员工修改。"></textarea>
+          </label>
+
+          <div class="ai-prompt-bank" aria-label="提示词示例">
+            <button type="button" data-ai-example="设计一个采购申请审批流程，包含提交申请、预算校验、部门负责人审批、财务复核、采购执行和归档。">采购审批</button>
+            <button type="button" data-ai-example="生成客户售后工单处理流程，包含受理、分派、处理、客户确认、关闭和升级分支。">售后工单</button>
+            <button type="button" data-ai-example="设计软件发布流程，包含需求冻结、开发完成、测试、灰度发布、监控、回滚判断和正式发布。">软件发布</button>
+          </div>
+
+          <div class="ai-actions">
+            <button id="aiGenerateButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">AI</span><span>生成并打开</span></button>
+            <div id="aiStatus" class="ai-status" role="status" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <aside class="ai-config" aria-label="模型配置">
+          <div class="ai-config-header">
+            <h3>模型配置</h3>
+            <button id="aiSaveConfigButton" type="button">保存</button>
+          </div>
+
+          <label class="ai-field compact">
+            <span>接口格式</span>
+            <select id="aiProviderFormat">
+              <option value="openai">OpenAI 格式</option>
+              <option value="anthropic">Anthropic 格式</option>
+            </select>
+          </label>
+
+          <label class="ai-field compact">
+            <span>Base URL</span>
+            <input id="aiBaseUrl" type="url" autocomplete="off">
+          </label>
+
+          <label class="ai-field compact">
+            <span>模型</span>
+            <input id="aiModel" type="text" autocomplete="off" placeholder="填写模型名称">
+          </label>
+
+          <label class="ai-field compact">
+            <span>API Key</span>
+            <input id="aiApiKey" type="password" autocomplete="off" placeholder="保存在当前浏览器">
+          </label>
+
+          <div class="ai-config-grid">
+            <label class="ai-field compact">
+              <span>温度</span>
+              <input id="aiTemperature" type="number" min="0" max="1" step="0.1" value="0.2">
+            </label>
+            <label class="ai-field compact">
+              <span>输出长度</span>
+              <input id="aiMaxTokens" type="number" min="800" max="8000" step="100" value="2200">
+            </label>
+          </div>
+
+          <div class="ai-routing-preview" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <section id="internalShareDialog" class="dialog-backdrop hidden" aria-labelledby="internalShareDialogTitle" aria-modal="true" role="dialog">
+    <section class="dialog-panel internal-recipient-dialog">
+      <button id="internalShareCloseButton" class="dialog-close" type="button" aria-label="关闭">×</button>
+      <div class="dialog-header">
+        <div class="dialog-kicker">组织分享</div>
+        <h2 id="internalShareDialogTitle">选择同事</h2>
+        <p id="internalShareDialogFile" class="dialog-message"></p>
+      </div>
+      <div class="dialog-body">
+        <label class="dialog-label" for="internalRecipientSearch">搜索同事</label>
+        <input id="internalRecipientSearch" class="dialog-input internal-recipient-search" type="search" autocomplete="off" placeholder="输入姓名或工号">
+        <div id="internalSelectedRecipients" class="internal-selected-recipients" aria-live="polite"></div>
+        <div id="internalRecipientList" class="internal-recipient-list" role="listbox" aria-label="同事列表"></div>
+        <div id="internalRecipientHint" class="dialog-hint"></div>
+        <label class="dialog-label internal-message-label" for="internalShareMessage">留言</label>
+        <textarea id="internalShareMessage" class="internal-share-message" rows="4" maxlength="2000">请查看这张图纸。</textarea>
+      </div>
+      <div class="dialog-actions">
+        <button id="internalShareCancelButton" class="dialog-secondary" type="button">取消</button>
+        <button id="internalShareSendButton" class="dialog-primary" type="button">发送</button>
+      </div>
+    </section>
+  </section>
 
   <script src="/dialog.js"></script>
   <script>
@@ -59,9 +221,64 @@
       var rows = document.getElementById('fileRows');
       var emptyState = document.getElementById('emptyState');
       var status = document.getElementById('status');
+      var folderTree = document.getElementById('folderTree');
+      var folderBreadcrumb = document.getElementById('folderBreadcrumb');
+      var currentFolderTitle = document.getElementById('currentFolderTitle');
+      var internalShareList = document.getElementById('internalShareList');
+      var internalShareEmpty = document.getElementById('internalShareEmpty');
+      var internalShareStatus = document.getElementById('internalShareStatus');
+      var refreshInternalSharesButton = document.getElementById('refreshInternalSharesButton');
+      var internalChat = document.getElementById('internalChat');
+      var internalChatTitle = document.getElementById('internalChatTitle');
+      var internalChatMeta = document.getElementById('internalChatMeta');
+      var internalMessages = document.getElementById('internalMessages');
+      var internalMessageInput = document.getElementById('internalMessageInput');
+      var sendInternalMessageButton = document.getElementById('sendInternalMessageButton');
+      var openInternalShareButton = document.getElementById('openInternalShareButton');
+      var internalShareDialog = document.getElementById('internalShareDialog');
+      var internalShareDialogFile = document.getElementById('internalShareDialogFile');
+      var internalRecipientSearch = document.getElementById('internalRecipientSearch');
+      var internalSelectedRecipients = document.getElementById('internalSelectedRecipients');
+      var internalRecipientList = document.getElementById('internalRecipientList');
+      var internalRecipientHint = document.getElementById('internalRecipientHint');
+      var internalShareMessage = document.getElementById('internalShareMessage');
+      var internalShareCloseButton = document.getElementById('internalShareCloseButton');
+      var internalShareCancelButton = document.getElementById('internalShareCancelButton');
+      var internalShareSendButton = document.getElementById('internalShareSendButton');
       var refreshButton = document.getElementById('refreshButton');
       var newButton = document.getElementById('newButton');
+      var newFolderButton = document.getElementById('newFolderButton');
+      var pasteButton = document.getElementById('pasteButton');
+      var profileButton = document.getElementById('profileButton');
+      var adminButton = document.getElementById('adminButton');
+      var aiToolbarButton = document.getElementById('aiToolbarButton');
+      var aiEntryButton = document.getElementById('aiEntryButton');
+      var aiAssistant = document.getElementById('aiAssistant');
+      var aiCloseButton = document.getElementById('aiCloseButton');
+      var aiPrompt = document.getElementById('aiPrompt');
+      var aiGenerateButton = document.getElementById('aiGenerateButton');
+      var aiStatus = document.getElementById('aiStatus');
+      var aiProviderFormat = document.getElementById('aiProviderFormat');
+      var aiBaseUrl = document.getElementById('aiBaseUrl');
+      var aiModel = document.getElementById('aiModel');
+      var aiApiKey = document.getElementById('aiApiKey');
+      var aiTemperature = document.getElementById('aiTemperature');
+      var aiMaxTokens = document.getElementById('aiMaxTokens');
+      var aiSaveConfigButton = document.getElementById('aiSaveConfigButton');
       var logoutButton = document.getElementById('logoutButton');
+      var aiStorageKey = 'companyDrawio.aiConfig.v1';
+      var currentEmployeeId = '';
+      var currentProfileName = '';
+      var currentDisplayName = '';
+      var currentEmployeeProfile = null;
+      var currentInternalShare = null;
+      var internalShareTargetFile = null;
+      var internalEmployees = [];
+      var selectedInternalEmployeeIds = new Set();
+      var files = [];
+      var folders = [];
+      var currentFolderId = null;
+      var clipboardItem = null;
 
       function setStatus(text, tone) {
         status.textContent = text || '';
@@ -128,51 +345,827 @@
         });
       }
 
-      function render(files) {
-        rows.innerHTML = '';
-        emptyState.classList.toggle('hidden', files.length > 0);
+      function setInternalShareStatus(text, tone) {
+        internalShareStatus.textContent = text || '';
+        internalShareStatus.className = 'status' + (tone ? ' ' + tone : '');
+      }
 
-        files.forEach(function (file) {
-          var tr = document.createElement('tr');
-          tr.innerHTML = [
-            '<td class="name-cell"><strong>' + escapeHtml(file.name) + '</strong></td>',
-            '<td>' + escapeHtml(formatDate(file.updatedAt)) + '</td>',
-            '<td>' + escapeHtml(formatBytes(file.size)) + '</td>',
-            '<td><div class="row-actions">',
-            '<button type="button" data-action="open"><span class="btn-icon" aria-hidden="true">↗</span><span>打开</span></button>',
-            '<button type="button" data-action="rename"><span class="btn-icon" aria-hidden="true">✎</span><span>重命名</span></button>',
-            '<button type="button" data-action="share"><span class="btn-icon" aria-hidden="true">⛓</span><span>分享</span></button>',
-            '<button type="button" data-action="download"><span class="btn-icon" aria-hidden="true">↓</span><span>下载</span></button>',
-            '<button class="danger" type="button" data-action="delete"><span class="btn-icon" aria-hidden="true">×</span><span>删除</span></button>',
-            '</div></td>'
+      function internalShareErrorText(err) {
+        var code = err && err.error;
+        var messages = {
+          recipient_required: '请填写至少一个同事工号。',
+          invalid_recipient: '收件人工号格式不正确。',
+          too_many_recipients: '一次分享的同事太多，请拆成多次分享。',
+          message_required: '请先输入消息。',
+          internal_share_not_found: '这个内部分享不可用或无权限访问。',
+          file_not_found: '原图纸不存在。'
+        };
+
+        return messages[code] || '组织分享操作失败，请稍后重试。';
+      }
+
+      function profileFromMap(profiles, employeeId) {
+        return profiles && profiles[employeeId] ? profiles[employeeId] : {
+          employeeId: employeeId,
+          name: '',
+          displayName: employeeId
+        };
+      }
+
+      function displayEmployee(employeeId, profiles) {
+        var profile = profileFromMap(profiles, employeeId);
+        return profile.displayName || profile.name || employeeId;
+      }
+
+      function normalizeSearchText(value) {
+        return String(value || '').toLowerCase().replace(/\s+/g, '');
+      }
+
+      function employeeSearchText(employee) {
+        return [
+          employee.employeeId,
+          employee.employeeId ? '工号' + employee.employeeId : '',
+          employee.name,
+          employee.displayName
+        ].join(' ');
+      }
+
+      function updateWhoami(profile) {
+        currentEmployeeId = profile.employeeId || currentEmployeeId;
+        currentProfileName = profile.name || '';
+        currentDisplayName = profile.displayName || currentProfileName || currentEmployeeId;
+        currentEmployeeProfile = {
+          employeeId: currentEmployeeId,
+          name: currentProfileName,
+          displayName: currentDisplayName
+        };
+        whoami.textContent = currentProfileName ? currentDisplayName + ' · 工号 ' + currentEmployeeId : '工号 ' + currentEmployeeId;
+      }
+
+      function renderInternalMessages(messages) {
+        internalMessages.innerHTML = '';
+        var profiles = currentInternalShare && currentInternalShare.share ? currentInternalShare.share.profiles : {};
+
+        (messages || []).forEach(function (message) {
+          var item = document.createElement('div');
+          var isMine = message.authorId === currentEmployeeId;
+          var author = profileFromMap(profiles, message.authorId);
+          var authorLabel = displayEmployee(message.authorId, profiles);
+          var authorMeta = author.name ? '工号 ' + author.employeeId : '未设置姓名';
+          item.className = 'internal-message' + (isMine ? ' mine' : '');
+          item.innerHTML = [
+            '<div class="internal-message-meta">',
+            '<strong>' + escapeHtml(authorLabel) + '</strong>',
+            '<em>' + escapeHtml(authorMeta) + '</em>',
+            '<span>' + escapeHtml(formatDate(message.createdAt)) + '</span>',
+            '</div>',
+            '<div class="internal-message-text">' + escapeHtml(message.text) + '</div>'
           ].join('');
-          tr.querySelector('[data-action="open"]').addEventListener('click', function () {
-            window.location.href = '/editor.html?id=' + encodeURIComponent(file.id);
-          });
-          tr.querySelector('[data-action="rename"]').addEventListener('click', function () {
-            renameFile(file);
-          });
-          tr.querySelector('[data-action="share"]').addEventListener('click', function () {
-            shareFile(file);
-          });
-          tr.querySelector('[data-action="download"]').addEventListener('click', function () {
-            downloadFile(file);
-          });
-          tr.querySelector('[data-action="delete"]').addEventListener('click', function () {
-            deleteFile(file);
-          });
-          rows.appendChild(tr);
+          internalMessages.appendChild(item);
         });
+
+        internalMessages.scrollTop = internalMessages.scrollHeight;
+      }
+
+      function renderInternalShares(shares) {
+        internalShareList.innerHTML = '';
+        internalShareEmpty.classList.toggle('hidden', shares.length > 0);
+
+        shares.forEach(function (share) {
+          var card = document.createElement('button');
+          var profiles = share.profiles || {};
+          var participants = (share.participants || []).filter(function (id) {
+            return id !== currentEmployeeId;
+          }).map(function (id) {
+            return displayEmployee(id, profiles);
+          });
+          var ownerName = displayEmployee(share.ownerId, profiles);
+          var unreadCount = Number(share.unreadCount || 0);
+          var unreadBadge = unreadCount > 0 ?
+            '<span class="internal-unread-badge" aria-label="' + escapeHtml(unreadCount + ' 条未读消息') + '">' + escapeHtml(unreadCount > 99 ? '99+' : unreadCount) + '</span>' :
+            '';
+          card.type = 'button';
+          card.className = 'internal-share-card' +
+            (currentInternalShare && currentInternalShare.share.id === share.id ? ' active' : '') +
+            (unreadCount > 0 ? ' has-unread' : '');
+          card.innerHTML = [
+            '<div class="internal-share-card-title"><strong>' + escapeHtml(share.file ? share.file.name : '图纸已删除') + '</strong>' + unreadBadge + '</div>',
+            '<span>' + escapeHtml(share.direction === 'sent' ? '我分享给 ' + (participants.join(', ') || '同事') : ownerName + ' 分享给我') + '</span>',
+            '<small>' + escapeHtml(share.lastMessage ? share.lastMessage.text : '') + '</small>'
+          ].join('');
+          card.addEventListener('click', function () {
+            openInternalShare(share.id);
+          });
+          internalShareList.appendChild(card);
+        });
+      }
+
+      function loadInternalShares() {
+        setInternalShareStatus('正在加载');
+        refreshInternalSharesButton.disabled = true;
+
+        return api('/api/internal-shares')
+          .then(function (body) {
+            var shares = body.shares || [];
+            var unreadTotal = shares.reduce(function (total, share) {
+              return total + Number(share.unreadCount || 0);
+            }, 0);
+            renderInternalShares(shares);
+            setInternalShareStatus(shares.length + ' 个会话' + (unreadTotal ? ' · ' + unreadTotal + ' 条未读' : ''), unreadTotal ? 'warn' : 'ok');
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              setInternalShareStatus('加载失败', 'error');
+            }
+          })
+          .finally(function () {
+            refreshInternalSharesButton.disabled = false;
+          });
+      }
+
+      function openInternalShare(shareId) {
+        setInternalShareStatus('正在打开');
+
+        return api('/api/internal-shares/' + encodeURIComponent(shareId))
+          .then(function (body) {
+            currentInternalShare = body;
+            internalChat.classList.remove('hidden');
+            internalChatTitle.textContent = body.share.file.name;
+            internalChatMeta.textContent = '参与人 ' + (body.share.participants || []).map(function (id) {
+              return displayEmployee(id, body.share.profiles || {});
+            }).join(', ');
+            renderInternalMessages(body.messages || []);
+            setInternalShareStatus('已打开', 'ok');
+            return loadInternalShares();
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              var message = internalShareErrorText(err);
+              setInternalShareStatus(message, 'error');
+              notify(message, 'error');
+            }
+          });
+      }
+
+      function sendInternalMessage() {
+        if (!currentInternalShare) {
+          return;
+        }
+
+        var text = internalMessageInput.value.trim();
+
+        if (!text) {
+          internalMessageInput.focus();
+          return;
+        }
+
+        sendInternalMessageButton.disabled = true;
+
+        api('/api/internal-shares/' + encodeURIComponent(currentInternalShare.share.id) + '/messages', {
+          method: 'POST',
+          body: JSON.stringify({ message: text })
+        })
+          .then(function (body) {
+            currentInternalShare.messages = body.messages || [];
+            currentInternalShare.share = body.share;
+            internalMessageInput.value = '';
+            renderInternalMessages(currentInternalShare.messages);
+            return loadInternalShares();
+          })
+          .catch(function (err) {
+            var message = internalShareErrorText(err);
+            notify(message, 'error');
+          })
+          .finally(function () {
+            sendInternalMessageButton.disabled = false;
+          });
+      }
+
+      function openInternalShareViewer() {
+        if (!currentInternalShare) {
+          return;
+        }
+
+        window.open('/share.html?internalShare=' + encodeURIComponent(currentInternalShare.share.id), '_blank');
+      }
+
+      function shareFileInternal(file) {
+        CompanyDialog.prompt({
+          title: '内部分享',
+          label: '同事工号',
+          placeholder: '多个工号用逗号或空格分隔',
+          confirmText: '下一步',
+          requiredText: '请输入同事工号'
+        }).then(function (recipients) {
+          if (recipients == null) {
+            return;
+          }
+
+          CompanyDialog.prompt({
+            title: '留言',
+            label: '给同事的话',
+            value: '请查看这张图纸。',
+            confirmText: '发送',
+            requiredText: '请输入留言'
+          }).then(function (message) {
+            if (message == null) {
+              return;
+            }
+
+            api('/api/files/' + encodeURIComponent(file.id) + '/share-internal', {
+              method: 'POST',
+              body: JSON.stringify({ recipients: recipients, message: message })
+            })
+              .then(function (body) {
+                notify('已分享给组织内同事。', 'ok');
+                currentInternalShare = { share: body.share, messages: body.messages || [] };
+                return openInternalShare(body.share.id);
+              })
+              .catch(function (err) {
+                var text = internalShareErrorText(err);
+                notify(text, 'error');
+                setInternalShareStatus(text, 'error');
+              });
+          });
+        });
+      }
+
+      function closeInternalShareDialog() {
+        internalShareDialog.classList.remove('is-visible');
+        window.setTimeout(function () {
+          internalShareDialog.classList.add('hidden');
+        }, 160);
+        internalShareTargetFile = null;
+      }
+
+      function selectedInternalRecipients() {
+        return Array.from(selectedInternalEmployeeIds);
+      }
+
+      function updateRecipientHint(filteredCount, selfMatched) {
+        if (!internalEmployees.length) {
+          internalRecipientHint.textContent = selfMatched ? '这是当前账号，内部分享需要选择其他同事。' : '暂无可选同事。请让同事先登录一次，系统会自动记录工号。';
+          internalRecipientHint.className = 'dialog-hint warn';
+          internalShareSendButton.disabled = true;
+          return;
+        }
+
+        if (selfMatched && filteredCount === 1) {
+          internalRecipientHint.textContent = '这是当前账号，内部分享需要选择其他同事。';
+          internalRecipientHint.className = 'dialog-hint warn';
+        } else if (!filteredCount) {
+          internalRecipientHint.textContent = '没有找到匹配的同事。可以搜索姓名或工号。';
+          internalRecipientHint.className = 'dialog-hint warn';
+        } else if (selectedInternalEmployeeIds.size) {
+          internalRecipientHint.textContent = '已选择 ' + selectedInternalEmployeeIds.size + ' 位同事。';
+          internalRecipientHint.className = 'dialog-hint ok';
+        } else {
+          internalRecipientHint.textContent = '搜索姓名或工号，然后勾选一个或多个同事。';
+          internalRecipientHint.className = 'dialog-hint';
+        }
+
+        internalShareSendButton.disabled = selectedInternalEmployeeIds.size === 0;
+      }
+
+      function renderSelectedRecipients() {
+        internalSelectedRecipients.innerHTML = '';
+
+        Array.from(selectedInternalEmployeeIds).forEach(function (employeeId) {
+          var employee = internalEmployees.find(function (item) {
+            return item.employeeId === employeeId;
+          }) || { employeeId: employeeId, displayName: employeeId };
+          var chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'internal-recipient-chip';
+          chip.setAttribute('data-remove-recipient', employeeId);
+          chip.innerHTML = '<span>' + escapeHtml(employee.displayName || employee.employeeId) + '</span><b aria-hidden="true">×</b>';
+          internalSelectedRecipients.appendChild(chip);
+        });
+      }
+
+      function renderEmployeeOptions(employees) {
+        var query = normalizeSearchText(internalRecipientSearch.value);
+        internalEmployees = (employees || []).slice().sort(function (a, b) {
+          return (a.displayName || a.employeeId).localeCompare(b.displayName || b.employeeId, 'zh-CN');
+        });
+        var filtered = internalEmployees.filter(function (employee) {
+          return !query || normalizeSearchText(employeeSearchText(employee)).indexOf(query) !== -1;
+        });
+        var selfMatched = query &&
+          currentEmployeeProfile &&
+          normalizeSearchText(employeeSearchText(currentEmployeeProfile)).indexOf(query) !== -1 &&
+          !internalEmployees.some(function (employee) {
+            return employee.employeeId === currentEmployeeId;
+          });
+
+        internalRecipientList.innerHTML = '';
+        renderSelectedRecipients();
+
+        if (selfMatched) {
+          var selfOption = document.createElement('div');
+          var selfPrimary = currentProfileName ? currentDisplayName : '工号 ' + currentEmployeeId;
+          var selfSecondary = currentProfileName ? '工号 ' + currentEmployeeId + ' · 当前账号，不能选择' : '当前账号，不能选择';
+          selfOption.className = 'internal-recipient-option is-disabled';
+          selfOption.innerHTML = [
+            '<span class="internal-recipient-lock" aria-hidden="true">–</span>',
+            '<span class="internal-recipient-copy">',
+            '<strong>' + escapeHtml(selfPrimary) + '</strong>',
+            '<small>' + escapeHtml(selfSecondary) + '</small>',
+            '</span>'
+          ].join('');
+          internalRecipientList.appendChild(selfOption);
+        }
+
+        filtered.forEach(function (employee) {
+          var id = 'internal-recipient-' + employee.employeeId.replace(/[^A-Za-z0-9_-]/g, '-');
+          var option = document.createElement('label');
+          var primaryText = employee.name ? (employee.displayName || employee.name) : '工号 ' + employee.employeeId;
+          var secondaryText = employee.name ? '工号 ' + employee.employeeId : '';
+          option.className = 'internal-recipient-option';
+          option.setAttribute('for', id);
+          option.innerHTML = [
+            '<input id="' + escapeHtml(id) + '" type="checkbox" value="' + escapeHtml(employee.employeeId) + '"' + (selectedInternalEmployeeIds.has(employee.employeeId) ? ' checked' : '') + '>',
+            '<span class="internal-recipient-copy">',
+            '<strong>' + escapeHtml(primaryText) + '</strong>',
+            secondaryText ? '<small>' + escapeHtml(secondaryText) + '</small>' : '',
+            '</span>'
+          ].join('');
+          internalRecipientList.appendChild(option);
+        });
+
+        updateRecipientHint(filtered.length + (selfMatched ? 1 : 0), selfMatched);
+      }
+
+      function openInternalShareDialog(file) {
+        internalShareTargetFile = file;
+        internalShareDialogFile.textContent = file.name;
+        internalRecipientHint.textContent = '正在加载同事';
+        internalRecipientHint.className = 'dialog-hint';
+        internalEmployees = [];
+        selectedInternalEmployeeIds = new Set();
+        internalRecipientSearch.value = '';
+        internalRecipientList.innerHTML = '';
+        internalSelectedRecipients.innerHTML = '';
+        internalShareMessage.value = '请查看这张图纸。';
+        internalShareSendButton.disabled = true;
+        internalShareDialog.classList.remove('hidden');
+        window.setTimeout(function () {
+          internalShareDialog.classList.add('is-visible');
+        }, 0);
+
+        api('/api/employees')
+          .then(function (body) {
+            renderEmployeeOptions(body.employees || []);
+            internalRecipientSearch.focus();
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              internalRecipientHint.textContent = '同事加载失败，请稍后重试。';
+              internalRecipientHint.className = 'dialog-hint error';
+            }
+          });
+      }
+
+      function sendInternalShare() {
+        if (!internalShareTargetFile) {
+          return;
+        }
+
+        var recipients = selectedInternalRecipients();
+
+        if (!recipients.length) {
+          internalRecipientHint.textContent = '请选择至少一个同事。';
+          internalRecipientHint.className = 'dialog-hint error';
+          internalRecipientSearch.focus();
+          return;
+        }
+
+        internalShareSendButton.disabled = true;
+
+        api('/api/files/' + encodeURIComponent(internalShareTargetFile.id) + '/share-internal', {
+          method: 'POST',
+          body: JSON.stringify({ recipients: recipients, message: internalShareMessage.value })
+        })
+          .then(function (body) {
+            notify('已分享给组织内同事。', 'ok');
+            closeInternalShareDialog();
+            currentInternalShare = { share: body.share, messages: body.messages || [] };
+            return openInternalShare(body.share.id);
+          })
+          .catch(function (err) {
+            var text = internalShareErrorText(err);
+            internalRecipientHint.textContent = text;
+            internalRecipientHint.className = 'dialog-hint error';
+            notify(text, 'error');
+            setInternalShareStatus(text, 'error');
+          })
+          .finally(function () {
+            updateRecipientHint(internalRecipientList.children.length);
+          });
+      }
+
+      function shareFileInternal(file) {
+        openInternalShareDialog(file);
+      }
+
+      function providerDefaultBaseUrl(format) {
+        return format === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1';
+      }
+
+      function setAiStatus(text, tone) {
+        aiStatus.textContent = text || '';
+        aiStatus.className = 'ai-status' + (tone ? ' ' + tone : '');
+      }
+
+      function collectAiConfig() {
+        return {
+          providerFormat: aiProviderFormat.value,
+          baseUrl: aiBaseUrl.value.trim(),
+          model: aiModel.value.trim(),
+          apiKey: aiApiKey.value.trim(),
+          temperature: aiTemperature.value,
+          maxTokens: aiMaxTokens.value
+        };
+      }
+
+      function loadAiConfig() {
+        var config = {
+          providerFormat: 'openai',
+          baseUrl: providerDefaultBaseUrl('openai'),
+          model: '',
+          apiKey: '',
+          temperature: '0.2',
+          maxTokens: '2200'
+        };
+
+        try {
+          config = Object.assign(config, JSON.parse(localStorage.getItem(aiStorageKey) || '{}'));
+        } catch (_err) {
+          // Ignore a corrupt browser-side config and fall back to defaults.
+        }
+
+        aiProviderFormat.value = config.providerFormat === 'anthropic' ? 'anthropic' : 'openai';
+        aiBaseUrl.value = config.baseUrl || providerDefaultBaseUrl(aiProviderFormat.value);
+        aiModel.value = config.model || '';
+        aiApiKey.value = config.apiKey || '';
+        aiTemperature.value = config.temperature || '0.2';
+        aiMaxTokens.value = config.maxTokens || '2200';
+      }
+
+      function saveAiConfig() {
+        localStorage.setItem(aiStorageKey, JSON.stringify(collectAiConfig()));
+        setAiStatus('配置已保存', 'ok');
+        notify('AI 配置已保存到当前浏览器。', 'ok');
+      }
+
+      function openAiPanel() {
+        aiAssistant.classList.remove('hidden');
+        window.setTimeout(function () {
+          aiPrompt.focus();
+        }, 0);
+      }
+
+      function closeAiPanel() {
+        aiAssistant.classList.add('hidden');
+      }
+
+      function aiErrorText(err) {
+        var code = err && err.error;
+        var messages = {
+          prompt_required: '请先输入提示词。',
+          prompt_too_large: '提示词太长，请压缩到 4000 字以内。',
+          ai_api_key_required: '请填写 API Key，或在服务端配置 AI 环境变量。',
+          ai_model_required: '请填写模型名称，或在服务端配置默认模型。',
+          invalid_ai_base_url: 'Base URL 格式不正确。',
+          unsupported_ai_provider: '暂不支持这个接口格式。',
+          ai_provider_timeout: '模型接口响应超时。',
+          ai_provider_unreachable: '无法连接模型接口。',
+          ai_provider_error: err && err.message ? err.message : '模型接口返回错误。',
+          ai_response_not_json: '模型返回内容不是可解析的流程图结构。',
+          ai_invalid_response: '模型返回内容不完整。'
+        };
+
+        return messages[code] || '生成失败，请检查模型配置后重试。';
+      }
+
+      function diagramNameFromTitle(title) {
+        var name = String(title || 'AI 流程图')
+          .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (!name) {
+          name = 'AI 流程图';
+        }
+
+        return /\.drawio$/i.test(name) ? name : name + '.drawio';
+      }
+
+      function generateFlowchart() {
+        var prompt = aiPrompt.value.trim();
+
+        if (!prompt) {
+          setAiStatus('请先输入提示词', 'error');
+          aiPrompt.focus();
+          return;
+        }
+
+        aiGenerateButton.disabled = true;
+        setAiStatus('正在生成流程结构');
+
+        api('/api/ai/flowchart', {
+          method: 'POST',
+          body: JSON.stringify({
+            prompt: prompt,
+            config: collectAiConfig()
+          })
+        })
+          .then(function (body) {
+            setAiStatus('正在创建图纸');
+            return api('/api/files', {
+              method: 'POST',
+              body: JSON.stringify({
+                name: diagramNameFromTitle(body.diagram && body.diagram.title),
+                xml: body.xml,
+                folderId: currentFolderId
+              })
+            });
+          })
+          .then(function (body) {
+            setAiStatus('已生成，正在打开', 'ok');
+            notify('AI 流程图已生成。', 'ok');
+            window.location.href = '/editor.html?id=' + encodeURIComponent(body.file.id);
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              var message = aiErrorText(err);
+              setAiStatus(message, 'error');
+              notify(message, 'error');
+            }
+          })
+          .finally(function () {
+            aiGenerateButton.disabled = false;
+          });
+      }
+
+      function folderById(folderId) {
+        return folders.find(function (folder) {
+          return folder.id === folderId;
+        }) || null;
+      }
+
+      function folderName(folderId) {
+        var folder = folderById(folderId);
+        return folder ? folder.name : '工号根目录';
+      }
+
+      function folderPath(folderId) {
+        var parts = [];
+        var cursor = folderById(folderId);
+        var guard = 0;
+
+        while (cursor && guard < 80) {
+          parts.unshift(cursor.name);
+          cursor = folderById(cursor.parentId);
+          guard += 1;
+        }
+
+        parts.unshift('工号 ' + currentEmployeeId);
+        return parts;
+      }
+
+      function childFolders(parentId) {
+        return folders
+          .filter(function (folder) {
+            return (folder.parentId || null) === (parentId || null);
+          })
+          .sort(function (left, right) {
+            return left.name.localeCompare(right.name, 'zh-CN');
+          });
+      }
+
+      function childFiles(folderId) {
+        return files
+          .filter(function (file) {
+            return (file.folderId || null) === (folderId || null);
+          })
+          .sort(function (left, right) {
+            return left.name.localeCompare(right.name, 'zh-CN');
+          });
+      }
+
+      function isDescendantFolder(folderId, possibleAncestorId) {
+        var cursor = folderById(folderId);
+        var guard = 0;
+
+        while (cursor && guard < 80) {
+          if (cursor.parentId === possibleAncestorId) {
+            return true;
+          }
+
+          cursor = folderById(cursor.parentId);
+          guard += 1;
+        }
+
+        return false;
+      }
+
+      function setCurrentFolder(folderId) {
+        currentFolderId = folderId || null;
+        renderLibrary();
+      }
+
+      function updateClipboardState() {
+        pasteButton.disabled = !clipboardItem;
+        pasteButton.title = clipboardItem ?
+          (clipboardItem.action === 'cut' ? '移动 ' : '复制 ') + clipboardItem.name + ' 到当前目录' :
+          '';
+      }
+
+      function setClipboard(kind, action, item) {
+        clipboardItem = {
+          kind: kind,
+          action: action,
+          id: item.id,
+          name: item.name
+        };
+        updateClipboardState();
+        notify((action === 'cut' ? '已剪切 ' : '已复制 ') + item.name + '。', 'ok');
+      }
+
+      function operationErrorText(err) {
+        var code = err && err.error;
+        var messages = {
+          folder_not_found: '目标文件夹不存在。',
+          file_not_found: '图纸不存在。',
+          invalid_folder_id: '文件夹参数不正确。',
+          invalid_folder_move: '不能把文件夹移动到自己或子文件夹里。'
+        };
+
+        return messages[code] || '操作失败，请稍后重试。';
+      }
+
+      function actionButton(icon, text, className) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = className || '';
+        button.innerHTML = '<span class="btn-icon" aria-hidden="true">' + escapeHtml(icon) + '</span><span>' + escapeHtml(text) + '</span>';
+        return button;
+      }
+
+      function renderFolderTree() {
+        folderTree.innerHTML = '';
+
+        function renderNode(folder, level) {
+          var row = document.createElement('button');
+          var folderId = folder ? folder.id : null;
+          row.type = 'button';
+          row.className = 'folder-tree-item' + ((currentFolderId || null) === (folderId || null) ? ' active' : '');
+          row.style.setProperty('--level', level);
+          row.innerHTML = [
+            '<span class="folder-glyph" aria-hidden="true">▣</span>',
+            '<span class="folder-tree-name">' + escapeHtml(folder ? folder.name : '工号 ' + currentEmployeeId) + '</span>'
+          ].join('');
+          row.addEventListener('click', function () {
+            setCurrentFolder(folderId);
+          });
+          folderTree.appendChild(row);
+
+          childFolders(folderId).forEach(function (child) {
+            renderNode(child, level + 1);
+          });
+        }
+
+        renderNode(null, 0);
+      }
+
+      function renderFolderRow(folder) {
+        var tr = document.createElement('tr');
+        var actions = document.createElement('div');
+        var openButton = actionButton('↗', '打开');
+        var renameButton = actionButton('✎', '重命名');
+        var copyButton = actionButton('⎘', '复制');
+        var cutButton = actionButton('✂', '剪切');
+        var deleteButton = actionButton('×', '删除', 'danger');
+
+        actions.className = 'row-actions';
+        [openButton, renameButton, copyButton, cutButton, deleteButton].forEach(function (button) {
+          actions.appendChild(button);
+        });
+
+        tr.innerHTML = [
+          '<td class="name-cell"><span class="item-kind" aria-hidden="true">▣</span><strong>' + escapeHtml(folder.name) + '</strong></td>',
+          '<td>文件夹</td>',
+          '<td>' + escapeHtml(formatDate(folder.updatedAt)) + '</td>',
+          '<td>-</td>',
+          '<td></td>'
+        ].join('');
+        tr.querySelector('td:last-child').appendChild(actions);
+        openButton.addEventListener('click', function () {
+          setCurrentFolder(folder.id);
+        });
+        renameButton.addEventListener('click', function () {
+          renameFolder(folder);
+        });
+        copyButton.addEventListener('click', function () {
+          setClipboard('folder', 'copy', folder);
+        });
+        cutButton.addEventListener('click', function () {
+          setClipboard('folder', 'cut', folder);
+        });
+        deleteButton.addEventListener('click', function () {
+          deleteFolder(folder);
+        });
+
+        rows.appendChild(tr);
+      }
+
+      function renderFileRow(file) {
+        var tr = document.createElement('tr');
+        var actions = document.createElement('div');
+        var openButton = actionButton('↗', '打开');
+        var renameButton = actionButton('✎', '重命名');
+        var copyButton = actionButton('⎘', '复制');
+        var cutButton = actionButton('✂', '剪切');
+        var shareButton = actionButton('⛓', '分享');
+        var internalShareButton = actionButton('↔', '内部分享');
+        var downloadButton = actionButton('↓', '下载');
+        var deleteButton = actionButton('×', '删除', 'danger');
+
+        actions.className = 'row-actions';
+        [openButton, renameButton, copyButton, cutButton, shareButton, internalShareButton, downloadButton, deleteButton].forEach(function (button) {
+          actions.appendChild(button);
+        });
+
+        tr.innerHTML = [
+          '<td class="name-cell"><span class="item-kind" aria-hidden="true">◇</span><strong>' + escapeHtml(file.name) + '</strong></td>',
+          '<td>图纸</td>',
+          '<td>' + escapeHtml(formatDate(file.updatedAt)) + '</td>',
+          '<td>' + escapeHtml(formatBytes(file.size)) + '</td>',
+          '<td></td>'
+        ].join('');
+        tr.querySelector('td:last-child').appendChild(actions);
+        openButton.addEventListener('click', function () {
+          window.location.href = '/editor.html?id=' + encodeURIComponent(file.id);
+        });
+        renameButton.addEventListener('click', function () {
+          renameFile(file);
+        });
+        copyButton.addEventListener('click', function () {
+          setClipboard('file', 'copy', file);
+        });
+        cutButton.addEventListener('click', function () {
+          setClipboard('file', 'cut', file);
+        });
+        shareButton.addEventListener('click', function () {
+          shareFile(file);
+        });
+        internalShareButton.addEventListener('click', function () {
+          shareFileInternal(file);
+        });
+        downloadButton.addEventListener('click', function () {
+          downloadFile(file);
+        });
+        deleteButton.addEventListener('click', function () {
+          deleteFile(file);
+        });
+
+        rows.appendChild(tr);
+      }
+
+      function renderLibrary() {
+        var current = currentFolderId ? folderById(currentFolderId) : null;
+
+        if (currentFolderId && !current) {
+          currentFolderId = null;
+        }
+
+        var foldersHere = childFolders(currentFolderId);
+        var filesHere = childFiles(currentFolderId);
+        rows.innerHTML = '';
+        renderFolderTree();
+        currentFolderTitle.textContent = folderName(currentFolderId);
+        folderBreadcrumb.textContent = folderPath(currentFolderId).join(' / ');
+        emptyState.classList.toggle('hidden', foldersHere.length + filesHere.length > 0);
+
+        foldersHere.forEach(renderFolderRow);
+        filesHere.forEach(renderFileRow);
+        setStatus(folders.length + ' 个文件夹 · ' + files.length + ' 个图纸', 'ok');
+        updateClipboardState();
       }
 
       function loadFiles() {
         setStatus('正在加载');
         refreshButton.disabled = true;
 
-        return api('/api/files')
-          .then(function (body) {
-            render(body.files || []);
-            setStatus((body.files || []).length + ' 个文件', 'ok');
+        return Promise.all([
+          api('/api/folders'),
+          api('/api/files')
+        ])
+          .then(function (results) {
+            folders = results[0].folders || [];
+            files = results[1].files || [];
+            renderLibrary();
           })
           .catch(function (err) {
             if (!err || err.error !== 'not_authenticated') {
@@ -201,7 +1194,7 @@
 
           api('/api/files', {
             method: 'POST',
-            body: JSON.stringify({ name: name })
+            body: JSON.stringify({ name: name, folderId: currentFolderId })
           })
             .then(function (body) {
               window.location.href = '/editor.html?id=' + encodeURIComponent(body.file.id);
@@ -214,6 +1207,37 @@
               newButton.disabled = false;
             });
           });
+      }
+
+      function createFolder() {
+        CompanyDialog.prompt({
+          title: '新建文件夹',
+          label: '文件夹名',
+          value: '新建文件夹',
+          confirmText: '创建',
+          requiredText: '请输入文件夹名'
+        }).then(function (name) {
+          if (name == null) {
+            return;
+          }
+
+          newFolderButton.disabled = true;
+
+          api('/api/folders', {
+            method: 'POST',
+            body: JSON.stringify({ name: name, parentId: currentFolderId })
+          })
+            .then(function () {
+              notify('文件夹已创建。', 'ok');
+              return loadFiles();
+            })
+            .catch(function (err) {
+              notify(operationErrorText(err), 'error');
+            })
+            .finally(function () {
+              newFolderButton.disabled = false;
+            });
+        });
       }
 
       function renameFile(file) {
@@ -242,6 +1266,71 @@
               notify('重命名失败，请稍后重试。', 'error');
             });
           });
+      }
+
+      function renameFolder(folder) {
+        CompanyDialog.prompt({
+          title: '重命名文件夹',
+          label: '新文件夹名',
+          value: folder.name,
+          confirmText: '保存',
+          requiredText: '请输入新文件夹名'
+        }).then(function (name) {
+          if (name == null) {
+            return;
+          }
+
+          api('/api/folders/' + encodeURIComponent(folder.id) + '/rename', {
+            method: 'POST',
+            body: JSON.stringify({ name: name })
+          })
+            .then(function () {
+              notify('文件夹名已更新。', 'ok');
+              return loadFiles();
+            })
+            .catch(function (err) {
+              notify(operationErrorText(err), 'error');
+            });
+        });
+      }
+
+      function pasteClipboard() {
+        if (!clipboardItem) {
+          return;
+        }
+
+        if (clipboardItem.kind === 'folder' && (clipboardItem.id === currentFolderId || isDescendantFolder(currentFolderId, clipboardItem.id))) {
+          notify('不能把文件夹粘贴到自己或子文件夹里。', 'error');
+          return;
+        }
+
+        pasteButton.disabled = true;
+        setStatus('正在粘贴');
+
+        var endpoint = clipboardItem.kind === 'folder' ?
+          '/api/folders/' + encodeURIComponent(clipboardItem.id) + '/' + clipboardItem.action :
+          '/api/files/' + encodeURIComponent(clipboardItem.id) + '/' + clipboardItem.action;
+        var payload = clipboardItem.kind === 'folder' ?
+          { parentId: currentFolderId } :
+          { folderId: currentFolderId };
+
+        api(endpoint, {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        })
+          .then(function () {
+            notify(clipboardItem.action === 'cut' ? '已移动。' : '已复制。', 'ok');
+
+            if (clipboardItem.action === 'cut') {
+              clipboardItem = null;
+            }
+
+            return loadFiles();
+          })
+          .catch(function (err) {
+            notify(operationErrorText(err), 'error');
+          })
+          .finally(updateClipboardState);
       }
 
       function shareFile(file) {
@@ -306,6 +1395,61 @@
           });
       }
 
+      function deleteFolder(folder) {
+        CompanyDialog.confirm({
+          title: '删除文件夹',
+          message: '确定删除“' + folder.name + '”及其中所有内容？',
+          confirmText: '删除',
+          cancelText: '保留',
+          danger: true
+        }).then(function (confirmed) {
+          if (!confirmed) {
+            return;
+          }
+
+          api('/api/folders/' + encodeURIComponent(folder.id), { method: 'DELETE' })
+            .then(function () {
+              if (currentFolderId === folder.id || isDescendantFolder(currentFolderId, folder.id)) {
+                currentFolderId = folder.parentId || null;
+              }
+
+              notify('文件夹已删除。', 'ok');
+              return loadFiles();
+            })
+            .catch(function (err) {
+              notify(operationErrorText(err), 'error');
+            });
+        });
+      }
+
+      function editProfileName() {
+        CompanyDialog.prompt({
+          title: '设置姓名',
+          label: '姓名',
+          value: currentProfileName,
+          placeholder: '例如：张三',
+          confirmText: '保存',
+          required: false
+        }).then(function (name) {
+          if (name == null) {
+            return;
+          }
+
+          api('/api/profile', {
+            method: 'PUT',
+            body: JSON.stringify({ name: name })
+          })
+            .then(function (body) {
+              updateWhoami(body.profile || {});
+              notify(currentProfileName ? '姓名已保存。' : '已清空姓名，将显示工号。', 'ok');
+              return loadInternalShares();
+            })
+            .catch(function () {
+              notify('姓名保存失败，请稍后重试。', 'error');
+            });
+        });
+      }
+
       function logout() {
         CompanyDialog.confirm({
           title: '退出登录',
@@ -331,13 +1475,101 @@
             return;
           }
 
-          whoami.textContent = '工号 ' + body.employeeId;
+          updateWhoami(body);
+          adminButton.classList.toggle('hidden', !body.canAdmin);
           loadFiles();
+          loadInternalShares();
         })
         .catch(function () {});
 
+      loadAiConfig();
+      var lastAiProviderFormat = aiProviderFormat.value;
+
+      aiProviderFormat.addEventListener('change', function () {
+        var previousDefault = providerDefaultBaseUrl(lastAiProviderFormat);
+        var nextDefault = providerDefaultBaseUrl(aiProviderFormat.value);
+
+        if (!aiBaseUrl.value.trim() || aiBaseUrl.value.trim() === previousDefault) {
+          aiBaseUrl.value = nextDefault;
+        }
+
+        lastAiProviderFormat = aiProviderFormat.value;
+      });
+
+      Array.prototype.forEach.call(document.querySelectorAll('[data-ai-example]'), function (button) {
+        button.addEventListener('click', function () {
+          aiPrompt.value = button.getAttribute('data-ai-example') || '';
+          aiPrompt.focus();
+        });
+      });
+
       refreshButton.addEventListener('click', loadFiles);
+      refreshInternalSharesButton.addEventListener('click', loadInternalShares);
+      sendInternalMessageButton.addEventListener('click', sendInternalMessage);
+      openInternalShareButton.addEventListener('click', openInternalShareViewer);
+      profileButton.addEventListener('click', editProfileName);
+      adminButton.addEventListener('click', function () {
+        window.location.href = '/admin.html';
+      });
+      internalShareCloseButton.addEventListener('click', closeInternalShareDialog);
+      internalShareCancelButton.addEventListener('click', closeInternalShareDialog);
+      internalShareSendButton.addEventListener('click', sendInternalShare);
+      internalShareDialog.addEventListener('mousedown', function (evt) {
+        if (evt.target === internalShareDialog) {
+          closeInternalShareDialog();
+        }
+      });
+      internalMessageInput.addEventListener('keydown', function (evt) {
+        if ((evt.ctrlKey || evt.metaKey) && evt.key === 'Enter') {
+          evt.preventDefault();
+          sendInternalMessage();
+        }
+      });
+      internalRecipientSearch.addEventListener('input', function () {
+        renderEmployeeOptions(internalEmployees);
+      });
+      internalRecipientList.addEventListener('change', function (evt) {
+        if (!evt.target || evt.target.type !== 'checkbox') {
+          return;
+        }
+
+        if (evt.target.checked) {
+          selectedInternalEmployeeIds.add(evt.target.value);
+        } else {
+          selectedInternalEmployeeIds.delete(evt.target.value);
+        }
+
+        renderEmployeeOptions(internalEmployees);
+      });
+      internalSelectedRecipients.addEventListener('click', function (evt) {
+        var target = evt.target.closest('[data-remove-recipient]');
+
+        if (!target) {
+          return;
+        }
+
+        selectedInternalEmployeeIds.delete(target.getAttribute('data-remove-recipient'));
+        renderEmployeeOptions(internalEmployees);
+        internalRecipientSearch.focus();
+      });
       newButton.addEventListener('click', createFile);
+      newFolderButton.addEventListener('click', createFolder);
+      pasteButton.addEventListener('click', pasteClipboard);
+      aiToolbarButton.addEventListener('click', openAiPanel);
+      aiEntryButton.addEventListener('click', openAiPanel);
+      aiCloseButton.addEventListener('click', closeAiPanel);
+      aiGenerateButton.addEventListener('click', generateFlowchart);
+      aiSaveConfigButton.addEventListener('click', saveAiConfig);
+      aiAssistant.addEventListener('mousedown', function (evt) {
+        if (evt.target === aiAssistant) {
+          closeAiPanel();
+        }
+      });
+      document.addEventListener('keydown', function (evt) {
+        if (evt.key === 'Escape' && !aiAssistant.classList.contains('hidden')) {
+          closeAiPanel();
+        }
+      });
       logoutButton.addEventListener('click', logout);
     }());
   </script>

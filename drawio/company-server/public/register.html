@@ -3,25 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>公司画图工具</title>
+  <title>注册 - 公司画图工具</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="stylesheet" href="/company.css">
+  <link rel="stylesheet" href="/company.css?v=accounts-20260704">
 </head>
-<body class="login-page">
-  <main class="login-shell" aria-label="公司画图工具登录">
+<body class="login-page register-page">
+  <main class="login-shell" aria-label="公司画图工具注册">
     <section class="login-visual" aria-hidden="true">
       <div class="login-wordmark">
         <img src="/images/drawlogo.svg" alt="">
         <div>
           <span>Company Draw</span>
-          <strong>公司画图工具</strong>
+          <strong>邀请码注册</strong>
         </div>
       </div>
-      <div class="blueprint">
-        <div class="blueprint-node node-start">流程</div>
-        <div class="blueprint-node node-system">系统</div>
-        <div class="blueprint-node node-api">接口</div>
-        <div class="blueprint-node node-data">数据</div>
+      <div class="blueprint invite-blueprint">
+        <div class="blueprint-node node-start">邀请码</div>
+        <div class="blueprint-node node-system">账号</div>
+        <div class="blueprint-node node-api">会话</div>
+        <div class="blueprint-node node-data">图纸</div>
         <div class="blueprint-line line-a"></div>
         <div class="blueprint-line line-b"></div>
         <div class="blueprint-line line-c"></div>
@@ -29,18 +29,18 @@
         <div class="blueprint-dot dot-b"></div>
       </div>
       <div class="login-caption">
-        <span>内部版</span>
-        <span>安全登录</span>
+        <span>内部准入</span>
+        <span>一次性邀请码</span>
       </div>
     </section>
 
     <section class="panel login-card">
       <div class="login-card-header">
-        <span class="eyebrow">Welcome back</span>
-        <h1>工号登录</h1>
-        <p>进入你的图纸工作台</p>
+        <span class="eyebrow">Create account</span>
+        <h1>注册账号</h1>
+        <p>输入管理员发放的邀请码，激活你的工号空间。</p>
       </div>
-      <form id="loginForm" autocomplete="on">
+      <form id="registerForm" autocomplete="on">
         <label class="field" for="employeeId">
           <span class="field-label">工号</span>
           <span class="input-wrap">
@@ -48,33 +48,57 @@
             <input id="employeeId" name="employeeId" autocomplete="username" autofocus required>
           </span>
         </label>
+        <label class="field" for="name">
+          <span class="field-label">姓名</span>
+          <span class="input-wrap">
+            <span class="input-icon" aria-hidden="true">名</span>
+            <input id="name" name="name" autocomplete="name">
+          </span>
+        </label>
+        <label class="field" for="inviteCode">
+          <span class="field-label">邀请码</span>
+          <span class="input-wrap">
+            <span class="input-icon" aria-hidden="true">码</span>
+            <input id="inviteCode" name="inviteCode" autocomplete="one-time-code" required>
+          </span>
+        </label>
         <label class="field" for="password">
           <span class="field-label">密码</span>
           <span class="input-wrap">
             <span class="input-icon" aria-hidden="true">#</span>
-            <input id="password" name="password" type="password" autocomplete="current-password" required>
+            <input id="password" name="password" type="password" autocomplete="new-password" minlength="6" required>
+          </span>
+        </label>
+        <label class="field" for="confirmPassword">
+          <span class="field-label">确认密码</span>
+          <span class="input-wrap">
+            <span class="input-icon" aria-hidden="true">#</span>
+            <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="6" required>
           </span>
         </label>
         <button id="submitButton" class="primary full login-submit" type="submit">
-          <span class="btn-icon" aria-hidden="true">→</span>
-          <span class="button-label">登录</span>
+          <span class="btn-icon" aria-hidden="true">+</span>
+          <span class="button-label">注册并进入</span>
         </button>
         <div id="message" class="status error login-message" role="alert"></div>
         <div class="auth-switch">
-          <span>没有账号？</span>
-          <a id="registerLink" href="/register.html">输入邀请码注册</a>
+          <span>已有账号？</span>
+          <a id="loginLink" href="/login.html">返回登录</a>
         </div>
       </form>
     </section>
   </main>
   <script>
     (function () {
-      var form = document.getElementById('loginForm');
+      var form = document.getElementById('registerForm');
       var employeeId = document.getElementById('employeeId');
+      var name = document.getElementById('name');
+      var inviteCode = document.getElementById('inviteCode');
       var password = document.getElementById('password');
+      var confirmPassword = document.getElementById('confirmPassword');
       var button = document.getElementById('submitButton');
       var message = document.getElementById('message');
-      var registerLink = document.getElementById('registerLink');
+      var loginLink = document.getElementById('loginLink');
       var params = new URLSearchParams(window.location.search);
       var next = params.get('next') || '/app.html';
 
@@ -90,8 +114,6 @@
         return '/app.html';
       }
 
-      registerLink.href = '/register.html?next=' + encodeURIComponent(safeNext(next));
-
       function setMessage(text) {
         message.textContent = text || '';
       }
@@ -99,8 +121,10 @@
       function setBusy(isBusy) {
         button.disabled = isBusy;
         button.classList.toggle('is-loading', isBusy);
-        button.querySelector('.button-label').textContent = isBusy ? '登录中' : '登录';
+        button.querySelector('.button-label').textContent = isBusy ? '注册中' : '注册并进入';
       }
+
+      loginLink.href = '/login.html?next=' + encodeURIComponent(safeNext(next));
 
       fetch('/api/me', { credentials: 'same-origin' })
         .then(function (res) { return res.ok ? res.json() : null; })
@@ -114,14 +138,23 @@
       form.addEventListener('submit', function (evt) {
         evt.preventDefault();
         setMessage('');
+
+        if (password.value !== confirmPassword.value) {
+          setMessage('两次输入的密码不一致。');
+          confirmPassword.focus();
+          return;
+        }
+
         setBusy(true);
 
-        fetch('/api/login', {
+        fetch('/api/register', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             employeeId: employeeId.value.trim(),
+            name: name.value.trim(),
+            inviteCode: inviteCode.value.trim(),
             password: password.value
           })
         })
@@ -140,10 +173,12 @@
           .catch(function (err) {
             if (err && err.error === 'invalid_employee_id') {
               setMessage('工号只能包含字母、数字、下划线或短横线。');
-            } else if (err && err.error === 'invalid_credentials') {
-              setMessage('工号或密码不正确。');
+            } else if (err && err.error === 'weak_password') {
+              setMessage('密码至少需要 ' + (err.minLength || 6) + ' 位。');
+            } else if (err && err.error === 'invalid_invite_code') {
+              setMessage('邀请码无效或已被使用。');
             } else {
-              setMessage('登录失败，请稍后重试。');
+              setMessage('注册失败，请稍后重试。');
             }
           })
           .finally(function () {

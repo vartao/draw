@@ -24,13 +24,17 @@ class DrawioRequestHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        self.headers.__delitem__("If-Modified-Since")
-        self.headers.__delitem__("If-None-Match")
+        if "If-Modified-Since" in self.headers:
+            del self.headers["If-Modified-Since"]
+        if "If-None-Match" in self.headers:
+            del self.headers["If-None-Match"]
         super().do_GET()
 
     def do_HEAD(self):
-        self.headers.__delitem__("If-Modified-Since")
-        self.headers.__delitem__("If-None-Match")
+        if "If-Modified-Since" in self.headers:
+            del self.headers["If-Modified-Since"]
+        if "If-None-Match" in self.headers:
+            del self.headers["If-None-Match"]
         super().do_HEAD()
 
 

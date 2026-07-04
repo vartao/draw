@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账号管理 - 公司画图工具</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/company.css?v=accounts-20260704">
+</head>
+<body class="admin-page">
+  <div class="shell admin-shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/images/drawlogo.svg" alt="">
+        <div>
+          <h1>账号管理</h1>
+          <div id="whoami" class="subtle"></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="appButton" type="button"><span class="btn-icon" aria-hidden="true">↩</span><span>工作台</span></button>
+        <button id="refreshButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>刷新</span></button>
+        <button id="logoutButton" type="button"><span class="btn-icon" aria-hidden="true">↪</span><span>退出</span></button>
+      </div>
+    </header>
+
+    <main class="content admin-content">
+      <section class="admin-overview" aria-label="账号概览">
+        <div class="admin-stat">
+          <span>账号</span>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div class="admin-stat">
+          <span>待注册</span>
+          <strong id="pendingCount">0</strong>
+        </div>
+        <div class="admin-stat">
+          <span>已启用</span>
+          <strong id="activeCount">0</strong>
+        </div>
+        <div class="admin-stat">
+          <span>管理员</span>
+          <strong id="adminCount">0</strong>
+        </div>
+      </section>
+
+      <section class="admin-grid">
+        <section class="panel admin-form-panel">
+          <div class="panel-header">
+            <h2>手动新增</h2>
+            <div id="manualStatus" class="status"></div>
+          </div>
+          <form id="manualForm" class="admin-form">
+            <label class="field" for="manualEmployeeId">
+              <span class="field-label">工号</span>
+              <input id="manualEmployeeId" name="employeeId" autocomplete="off" required>
+            </label>
+            <label class="field" for="manualName">
+              <span class="field-label">姓名</span>
+              <input id="manualName" name="name" autocomplete="off">
+            </label>
+            <label class="field" for="manualRole">
+              <span class="field-label">角色</span>
+              <select id="manualRole" name="role">
+                <option value="user">普通用户</option>
+                <option value="admin">管理员</option>
+              </select>
+            </label>
+            <button class="primary full" type="submit"><span class="btn-icon" aria-hidden="true">+</span><span>生成邀请码</span></button>
+          </form>
+          <div id="manualInvite" class="invite-result hidden"></div>
+        </section>
+
+        <section class="panel admin-form-panel">
+          <div class="panel-header">
+            <h2>批量新增</h2>
+            <div id="batchStatus" class="status"></div>
+          </div>
+          <form id="batchForm" class="admin-form">
+            <label class="field" for="batchRole">
+              <span class="field-label">默认角色</span>
+              <select id="batchRole" name="role">
+                <option value="user">普通用户</option>
+                <option value="admin">管理员</option>
+              </select>
+            </label>
+            <label class="field" for="batchText">
+              <span class="field-label">账号清单</span>
+              <textarea id="batchText" rows="8" placeholder="10001,张三&#10;10002,李四&#10;admin02,王五,admin"></textarea>
+            </label>
+            <button class="primary full" type="submit"><span class="btn-icon" aria-hidden="true">⇥</span><span>批量生成</span></button>
+          </form>
+          <div id="batchResult" class="batch-result hidden"></div>
+        </section>
+      </section>
+
+      <section class="panel admin-accounts-panel">
+        <div class="panel-header">
+          <h2>账号列表</h2>
+          <div id="tableStatus" class="status"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>工号</th>
+                <th>姓名</th>
+                <th>角色</th>
+                <th>状态</th>
+                <th>邀请码尾号</th>
+                <th>更新时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountRows"></tbody>
+          </table>
+          <div id="emptyState" class="empty hidden">
+            <div class="empty-mark" aria-hidden="true">+</div>
+            <strong>还没有账号</strong>
+            <span>先生成一个邀请码。</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/dialog.js"></script>
+  <script>
+    (function () {
+      var whoami = document.getElementById('whoami');
+      var manualForm = document.getElementById('manualForm');
+      var manualEmployeeId = document.getElementById('manualEmployeeId');
+      var manualName = document.getElementById('manualName');
+      var manualRole = document.getElementById('manualRole');
+      var manualStatus = document.getElementById('manualStatus');
+      var manualInvite = document.getElementById('manualInvite');
+      var batchForm = document.getElementById('batchForm');
+      var batchRole = document.getElementById('batchRole');
+      var batchText = document.getElementById('batchText');
+      var batchStatus = document.getElementById('batchStatus');
+      var batchResult = document.getElementById('batchResult');
+      var tableStatus = document.getElementById('tableStatus');
+      var accountRows = document.getElementById('accountRows');
+      var emptyState = document.getElementById('emptyState');
+      var totalCount = document.getElementById('totalCount');
+      var pendingCount = document.getElementById('pendingCount');
+      var activeCount = document.getElementById('activeCount');
+      var adminCount = document.getElementById('adminCount');
+      var refreshButton = document.getElementById('refreshButton');
+      var appButton = document.getElementById('appButton');
+      var logoutButton = document.getElementById('logoutButton');
+      var accounts = [];
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function api(path, options) {
+        return fetch(path, Object.assign({
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' }
+        }, options || {})).then(function (res) {
+          if (res.status === 401) {
+            window.location.replace('/login.html?next=' + encodeURIComponent('/admin.html'));
+            return Promise.reject(new Error('not_authenticated'));
+          }
+
+          if (res.status === 403) {
+            window.location.replace('/app.html');
+            return Promise.reject(new Error('not_authorized'));
+          }
+
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw body;
+            }
+
+            return body;
+          });
+        });
+      }
+
+      function notify(message, tone) {
+        if (window.CompanyToast) {
+          window.CompanyToast.show({ message: message, tone: tone || 'ok' });
+        }
+      }
+
+      function roleLabel(role) {
+        return role === 'admin' ? '管理员' : '普通用户';
+      }
+
+      function statusLabel(status) {
+        if (status === 'pending') {
+          return '待注册';
+        }
+
+        if (status === 'disabled') {
+          return '已停用';
+        }
+
+        return '已启用';
+      }
+
+      function formatTime(value) {
+        if (!value) {
+          return '-';
+        }
+
+        var date = new Date(value);
+
+        if (Number.isNaN(date.getTime())) {
+          return value;
+        }
+
+        return date.toLocaleString('zh-CN', {
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      }
+
+      function copyText(value) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(value);
+        }
+
+        var input = document.createElement('input');
+        input.value = value;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        return Promise.resolve();
+      }
+
+      function renderInviteResult(container, account) {
+        if (!account || !account.inviteCode) {
+          container.classList.add('hidden');
+          container.innerHTML = '';
+          return;
+        }
+
+        container.classList.remove('hidden');
+        container.innerHTML = [
+          '<div>',
+          '<span>邀请码</span>',
+          '<strong>' + escapeHtml(account.inviteCode) + '</strong>',
+          '<small>' + escapeHtml(account.employeeId) + ' · ' + roleLabel(account.role) + '</small>',
+          '</div>',
+          '<button type="button" data-copy-code="' + escapeHtml(account.inviteCode) + '">复制</button>'
+        ].join('');
+      }
+
+      function renderBatchResult(body) {
+        var created = body.created || [];
+        var errors = body.errors || [];
+
+        if (!created.length && !errors.length) {
+          batchResult.classList.add('hidden');
+          batchResult.innerHTML = '';
+          return;
+        }
+
+        batchResult.classList.remove('hidden');
+        batchResult.innerHTML = [
+          created.map(function (account) {
+            return '<div class="batch-code-row"><code>' + escapeHtml(account.inviteCode) + '</code><span>' +
+              escapeHtml(account.employeeId) + ' · ' + roleLabel(account.role) +
+              '</span><button type="button" data-copy-code="' + escapeHtml(account.inviteCode) + '">复制</button></div>';
+          }).join(''),
+          errors.map(function (error) {
+            return '<div class="batch-error-row">第 ' + escapeHtml(error.line) + ' 行：' +
+              escapeHtml(error.employeeId || '-') + ' · ' + escapeHtml(error.error) + '</div>';
+          }).join('')
+        ].join('');
+      }
+
+      function renderStats() {
+        totalCount.textContent = accounts.length;
+        pendingCount.textContent = accounts.filter(function (account) { return account.status === 'pending'; }).length;
+        activeCount.textContent = accounts.filter(function (account) { return account.status === 'active'; }).length;
+        adminCount.textContent = accounts.filter(function (account) { return account.role === 'admin'; }).length;
+      }
+
+      function renderAccounts() {
+        renderStats();
+        accountRows.innerHTML = '';
+        emptyState.classList.toggle('hidden', accounts.length > 0);
+
+        accounts.forEach(function (account) {
+          var tr = document.createElement('tr');
+          var inviteText = account.status === 'pending' && account.inviteCodePreview ?
+            '仅尾号 ' + account.inviteCodePreview :
+            '-';
+          var isReadonly = account.source === 'environment';
+          var actions = [];
+          var inviteCell = escapeHtml(inviteText);
+
+          if (account.status === 'pending') {
+            if (account.inviteCode) {
+              inviteCell = '<div class="invite-code-cell"><code>' + escapeHtml(account.inviteCode) +
+                '</code><button type="button" data-copy-code="' + escapeHtml(account.inviteCode) + '">复制</button></div>';
+            } else if (account.inviteCodePreview) {
+              inviteCell = '<span class="subtle">尾号 ' + escapeHtml(account.inviteCodePreview) + '</span>';
+            }
+          }
+
+          if (account.status === 'pending' && !isReadonly) {
+            actions.push('<button type="button" data-action="invite" data-id="' + escapeHtml(account.employeeId) + '">重生成完整码</button>');
+          }
+
+          if (account.status === 'active' && !isReadonly) {
+            actions.push('<button type="button" data-action="disable" data-id="' + escapeHtml(account.employeeId) + '">停用</button>');
+          }
+
+          if (account.status === 'disabled' && !isReadonly) {
+            actions.push('<button type="button" data-action="enable" data-id="' + escapeHtml(account.employeeId) + '">启用</button>');
+          }
+
+          if (!isReadonly) {
+            actions.push('<button class="danger" type="button" data-action="delete" data-id="' + escapeHtml(account.employeeId) + '">删除</button>');
+          }
+
+          tr.innerHTML = [
+            '<td><strong>' + escapeHtml(account.employeeId) + '</strong></td>',
+            '<td>' + escapeHtml(account.name || '-') + '</td>',
+            '<td><span class="role-pill role-' + escapeHtml(account.role) + '">' + roleLabel(account.role) + '</span></td>',
+            '<td><span class="status-pill status-' + escapeHtml(account.status) + '">' + statusLabel(account.status) + '</span></td>',
+            '<td>' + inviteCell + '</td>',
+            '<td>' + escapeHtml(formatTime(account.updatedAt || account.createdAt)) + '</td>',
+            '<td><div class="row-actions">' + (actions.join('') || '<span class="subtle">系统账号</span>') + '</div></td>'
+          ].join('');
+          accountRows.appendChild(tr);
+        });
+      }
+
+      function loadAccounts() {
+        tableStatus.textContent = '加载中';
+        return api('/api/admin/accounts')
+          .then(function (body) {
+            accounts = body.accounts || [];
+            renderAccounts();
+            tableStatus.textContent = '';
+          })
+          .catch(function () {
+            tableStatus.textContent = '加载失败';
+            tableStatus.className = 'status error';
+          });
+      }
+
+      function loadMe() {
+        return api('/api/me').then(function (body) {
+          whoami.textContent = body.displayName + ' · 管理员';
+        });
+      }
+
+      manualForm.addEventListener('submit', function (evt) {
+        evt.preventDefault();
+        manualStatus.textContent = '生成中';
+        manualStatus.className = 'status';
+
+        api('/api/admin/accounts', {
+          method: 'POST',
+          body: JSON.stringify({
+            employeeId: manualEmployeeId.value.trim(),
+            name: manualName.value.trim(),
+            role: manualRole.value
+          })
+        })
+          .then(function (body) {
+            manualStatus.textContent = '';
+            renderInviteResult(manualInvite, body.account);
+            manualForm.reset();
+            notify('邀请码已生成');
+            return loadAccounts();
+          })
+          .catch(function (err) {
+            manualStatus.textContent = err && err.error === 'account_exists' ? '账号已存在' : '生成失败';
+            manualStatus.className = 'status error';
+          });
+      });
+
+      batchForm.addEventListener('submit', function (evt) {
+        evt.preventDefault();
+        batchStatus.textContent = '生成中';
+        batchStatus.className = 'status';
+
+        api('/api/admin/accounts/batch', {
+          method: 'POST',
+          body: JSON.stringify({
+            text: batchText.value,
+            role: batchRole.value
+          })
+        })
+          .then(function (body) {
+            batchStatus.textContent = body.errors && body.errors.length ? '部分完成' : '';
+            batchStatus.className = body.errors && body.errors.length ? 'status warn' : 'status';
+            renderBatchResult(body);
+            notify('批量邀请码已生成');
+            return loadAccounts();
+          })
+          .catch(function (err) {
+            batchStatus.textContent = err && err.error === 'batch_empty' ? '请填写账号清单' : '批量生成失败';
+            batchStatus.className = 'status error';
+          });
+      });
+
+      document.body.addEventListener('click', function (evt) {
+        var copyCode = evt.target.getAttribute('data-copy-code');
+        var action = evt.target.getAttribute('data-action');
+        var employeeId = evt.target.getAttribute('data-id');
+
+        if (copyCode) {
+          copyText(copyCode).then(function () {
+            notify('邀请码已复制');
+          });
+          return;
+        }
+
+        if (!action || !employeeId) {
+          return;
+        }
+
+        if (action === 'invite') {
+          api('/api/admin/accounts/' + encodeURIComponent(employeeId) + '/invite', {
+            method: 'POST',
+            body: JSON.stringify({})
+          })
+            .then(function (body) {
+              renderInviteResult(manualInvite, body.account);
+              notify('邀请码已重新生成');
+              return loadAccounts();
+            })
+            .catch(function () {
+              notify('邀请码生成失败', 'error');
+            });
+          return;
+        }
+
+        if (action === 'enable' || action === 'disable') {
+          api('/api/admin/accounts/' + encodeURIComponent(employeeId), {
+            method: 'PATCH',
+            body: JSON.stringify({ status: action === 'enable' ? 'active' : 'disabled' })
+          })
+            .then(function () {
+              notify(action === 'enable' ? '账号已启用' : '账号已停用');
+              return loadAccounts();
+            })
+            .catch(function () {
+              notify('账号状态更新失败', 'error');
+            });
+          return;
+        }
+
+        if (action === 'delete') {
+          if (!window.confirm('删除账号 ' + employeeId + '？')) {
+            return;
+          }
+
+          api('/api/admin/accounts/' + encodeURIComponent(employeeId), {
+            method: 'DELETE'
+          })
+            .then(function () {
+              notify('账号已删除');
+              return loadAccounts();
+            })
+            .catch(function () {
+              notify('账号删除失败', 'error');
+            });
+        }
+      });
+
+      refreshButton.addEventListener('click', loadAccounts);
+      appButton.addEventListener('click', function () {
+        window.location.href = '/app.html';
+      });
+      logoutButton.addEventListener('click', function () {
+        api('/api/logout', { method: 'POST', body: JSON.stringify({}) })
+          .finally(function () {
+            window.location.replace('/login.html');
+          });
+      });
+
+      loadMe().then(loadAccounts).catch(function () {});
+    }());
+  </script>
+</body>
+</html>

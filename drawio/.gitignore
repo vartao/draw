@@ -3,6 +3,7 @@ build
 classes
 node_modules
 company-server/data/
+company-server/.visual-data/
 company-server/backups/
 company-server/*.log
 .vscode/settings.json
