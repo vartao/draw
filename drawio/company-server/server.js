@@ -2036,6 +2036,9 @@ function buildFlowchartInstruction(prompt) {
     '- Use 4 to 14 nodes unless the request is extremely small.',
     '- Keep labels short and action-oriented.',
     '- Use decision nodes only where a real branch exists.',
+    '- Order nodes in natural reading order: start, main path, branch tasks, merge, end.',
+    '- Label decision edges with concise yes/no labels in the user language.',
+    '- Avoid backward edges unless a loop or rework path is explicitly needed.',
     '- Node ids must be stable ASCII identifiers.',
     '- Preserve the user language for labels.',
     '',
@@ -2391,7 +2394,7 @@ function escapeXml(value) {
 }
 
 function nodeStyle(type) {
-  const common = 'whiteSpace=wrap;html=1;strokeWidth=2;fontColor=#17211f;spacing=10;';
+  const common = 'whiteSpace=wrap;html=1;strokeWidth=2;fontColor=#17211f;fontSize=14;fontFamily=Microsoft YaHei,Arial;align=center;verticalAlign=middle;spacing=12;shadow=0;';
 
   if (type === 'start') {
     return `${common}ellipse;fillColor=#e0f1ec;strokeColor=#147866;`;
@@ -2402,7 +2405,7 @@ function nodeStyle(type) {
   }
 
   if (type === 'decision') {
-    return `${common}rhombus;fillColor=#edf4ff;strokeColor=#215fbd;`;
+    return `${common}rhombus;fillColor=#edf4ff;strokeColor=#215fbd;spacing=8;`;
   }
 
   if (type === 'data') {
@@ -2412,26 +2415,207 @@ function nodeStyle(type) {
   return `${common}rounded=1;arcSize=10;fillColor=#fffdf8;strokeColor=#215fbd;`;
 }
 
+function flowchartNodeSize(type) {
+  if (type === 'decision') {
+    return { width: 176, height: 96 };
+  }
+
+  if (type === 'start' || type === 'end') {
+    return { width: 184, height: 64 };
+  }
+
+  if (type === 'data') {
+    return { width: 210, height: 72 };
+  }
+
+  return { width: 210, height: 72 };
+}
+
+function edgeLabelKind(label) {
+  const text = String(label || '').trim().toLowerCase();
+
+  if (/^(no|n|false)$/.test(text) || /否|不|未|拒绝|无需|失败/.test(text)) {
+    return 'no';
+  }
+
+  if (/^(yes|y|true)$/.test(text) || /是|需|通过|同意|成功|升级/.test(text)) {
+    return 'yes';
+  }
+
+  return '';
+}
+
+function assignFlowchartLanes(spec, indexById) {
+  const lanes = new Map();
+  const outgoing = new Map();
+
+  spec.edges.forEach((edge) => {
+    if (!outgoing.has(edge.from)) {
+      outgoing.set(edge.from, []);
+    }
+
+    outgoing.get(edge.from).push(edge);
+  });
+
+  spec.nodes.forEach((node, index) => {
+    if (!lanes.has(node.id)) {
+      lanes.set(node.id, index > 0 && lanes.has(spec.nodes[index - 1].id) ? lanes.get(spec.nodes[index - 1].id) : 0);
+    }
+
+    const lane = lanes.get(node.id);
+    const forwardEdges = (outgoing.get(node.id) || [])
+      .filter((edge) => indexById.get(edge.to) > index)
+      .sort((a, b) => indexById.get(a.to) - indexById.get(b.to));
+
+    if (node.type === 'decision' && forwardEdges.length > 1) {
+      const mainEdge = forwardEdges.find((edge) => edgeLabelKind(edge.label) === 'no') ||
+        forwardEdges.find((edge) => indexById.get(edge.to) === index + 1) ||
+        forwardEdges[0];
+      let sideOffset = 1;
+
+      forwardEdges.forEach((edge) => {
+        if (edge === mainEdge) {
+          if (!lanes.has(edge.to)) {
+            lanes.set(edge.to, lane);
+          }
+
+          return;
+        }
+
+        const kind = edgeLabelKind(edge.label);
+        const side = kind === 'no' ? -1 : 1;
+
+        if (!lanes.has(edge.to)) {
+          lanes.set(edge.to, lane + side * sideOffset);
+        }
+
+        sideOffset += 1;
+      });
+
+      return;
+    }
+
+    forwardEdges.forEach((edge) => {
+      if (!lanes.has(edge.to)) {
+        lanes.set(edge.to, lane);
+      }
+    });
+  });
+
+  spec.nodes.forEach((node) => {
+    if (!lanes.has(node.id)) {
+      lanes.set(node.id, 0);
+    }
+  });
+
+  return lanes;
+}
+
+function roundedGrid(value) {
+  return Math.round(value / 10) * 10;
+}
+
+function flowchartEdgeStyle(sourceLayout, targetLayout) {
+  const backward = targetLayout.index <= sourceLayout.index;
+  const common = [
+    'edgeStyle=orthogonalEdgeStyle',
+    'rounded=1',
+    'orthogonalLoop=1',
+    'jettySize=auto',
+    'html=1',
+    'endArrow=block',
+    'strokeWidth=2',
+    'fontSize=12',
+    'fontFamily=Microsoft YaHei,Arial',
+    'fontColor=#3f514c',
+    'labelBackgroundColor=#ffffff',
+    'spacing=8'
+  ];
+
+  if (backward) {
+    common.push('strokeColor=#8a9792', 'dashed=1', 'dashPattern=8 4');
+  } else {
+    common.push('strokeColor=#52645f');
+  }
+
+  return `${common.join(';')};`;
+}
+
+function edgeWaypoints(sourceLayout, targetLayout) {
+  const sourceCenterX = sourceLayout.x + sourceLayout.width / 2;
+  const sourceCenterY = sourceLayout.y + sourceLayout.height / 2;
+  const targetCenterX = targetLayout.x + targetLayout.width / 2;
+  const targetCenterY = targetLayout.y + targetLayout.height / 2;
+  const backward = targetLayout.index <= sourceLayout.index;
+  const crossLane = sourceLayout.lane !== targetLayout.lane;
+  const skippedSameLane = !crossLane && targetLayout.index > sourceLayout.index + 1;
+
+  if (backward) {
+    const routeX = roundedGrid(Math.max(sourceLayout.x + sourceLayout.width, targetLayout.x + targetLayout.width) + 90);
+    return [
+      { x: routeX, y: roundedGrid(sourceCenterY) },
+      { x: routeX, y: roundedGrid(targetCenterY) }
+    ];
+  }
+
+  if (crossLane) {
+    return [
+      { x: roundedGrid(targetCenterX), y: roundedGrid(sourceCenterY) }
+    ];
+  }
+
+  if (skippedSameLane) {
+    const routeX = roundedGrid(sourceLayout.x + sourceLayout.width + 72);
+    return [
+      { x: routeX, y: roundedGrid(sourceCenterY) },
+      { x: routeX, y: roundedGrid(targetCenterY) }
+    ];
+  }
+
+  return [];
+}
+
+function edgeGeometryXml(points) {
+  if (!points.length) {
+    return '<mxGeometry relative="1" as="geometry"/>';
+  }
+
+  return [
+    '<mxGeometry relative="1" as="geometry">',
+    '<Array as="points">',
+    points.map((point) => `<mxPoint x="${point.x}" y="${point.y}"/>`).join(''),
+    '</Array>',
+    '</mxGeometry>'
+  ].join('');
+}
+
 function renderFlowchartXml(spec) {
-  const width = 190;
-  const height = 70;
-  const startX = 320;
-  const startY = 70;
-  const gapY = 122;
+  const startY = 80;
+  const gapY = 136;
+  const laneGap = 285;
+  const minPageWidth = 900;
   const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
   const nodeCellIds = new Map();
+  const nodeLayouts = new Map();
+  const indexById = new Map(spec.nodes.map((node, index) => [node.id, index]));
+  const lanes = assignFlowchartLanes(spec, indexById);
+  const laneValues = Array.from(lanes.values());
+  const maxAbsLane = Math.max(1, ...laneValues.map((lane) => Math.abs(lane)));
+  const pageWidth = Math.max(minPageWidth, maxAbsLane * 2 * laneGap + 480);
+  const centerX = pageWidth / 2;
 
   spec.nodes.forEach((node, index) => {
     const cellId = `ai_node_${node.id}`;
-    const nodeHeight = node.type === 'decision' ? 92 : height;
-    const nodeWidth = node.type === 'decision' ? 172 : width;
-    const x = startX + (node.type === 'data' ? -8 : 0);
+    const size = flowchartNodeSize(node.type);
+    const lane = lanes.get(node.id) || 0;
+    const x = roundedGrid(centerX + lane * laneGap - size.width / 2);
     const y = startY + index * gapY;
 
     nodeCellIds.set(node.id, cellId);
+    nodeLayouts.set(node.id, { ...size, x, y, lane, index });
     cells.push([
       `<mxCell id="${escapeXml(cellId)}" value="${escapeXml(node.label)}" style="${escapeXml(nodeStyle(node.type))}" vertex="1" parent="1">`,
-      `<mxGeometry x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" as="geometry"/>`,
+      `<mxGeometry x="${x}" y="${y}" width="${size.width}" height="${size.height}" as="geometry"/>`,
       '</mxCell>'
     ].join(''));
   });
@@ -2439,22 +2623,24 @@ function renderFlowchartXml(spec) {
   spec.edges.forEach((edge, index) => {
     const source = nodeCellIds.get(edge.from);
     const target = nodeCellIds.get(edge.to);
+    const sourceLayout = nodeLayouts.get(edge.from);
+    const targetLayout = nodeLayouts.get(edge.to);
 
-    if (!source || !target) {
+    if (!source || !target || !sourceLayout || !targetLayout) {
       return;
     }
 
     cells.push([
-      `<mxCell id="ai_edge_${index + 1}" value="${escapeXml(edge.label)}" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#66746f;fontColor=#53645f;" edge="1" parent="1" source="${escapeXml(source)}" target="${escapeXml(target)}">`,
-      '<mxGeometry relative="1" as="geometry"/>',
+      `<mxCell id="ai_edge_${index + 1}" value="${escapeXml(edge.label)}" style="${escapeXml(flowchartEdgeStyle(sourceLayout, targetLayout))}" edge="1" parent="1" source="${escapeXml(source)}" target="${escapeXml(target)}">`,
+      edgeGeometryXml(edgeWaypoints(sourceLayout, targetLayout)),
       '</mxCell>'
     ].join(''));
   });
 
-  const pageHeight = Math.max(1169, startY + spec.nodes.length * gapY + 120);
+  const pageHeight = Math.max(1169, startY + spec.nodes.length * gapY + 160);
 
   return [
-    `<mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="${pageHeight}" math="0" shadow="0">`,
+    `<mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="${pageWidth}" pageHeight="${pageHeight}" math="0" shadow="0">`,
     '<root>',
     cells.join(''),
     '</root>',

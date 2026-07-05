@@ -269,6 +269,45 @@ test('company API supports login, file isolation, save conflicts and share links
       return;
     }
 
+    if (req.url === '/branch/chat/completions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                title: 'After-sales support',
+                nodes: [
+                  { id: 'start', label: '开始', type: 'start' },
+                  { id: 'receive', label: '受理工单', type: 'process' },
+                  { id: 'assign', label: '分派工单', type: 'process' },
+                  { id: 'handle', label: '处理问题', type: 'process' },
+                  { id: 'upgrade', label: '需要升级?', type: 'decision' },
+                  { id: 'escalate', label: '升级处理', type: 'process' },
+                  { id: 'confirm', label: '客户确认', type: 'process' },
+                  { id: 'satisfied', label: '客户满意?', type: 'decision' },
+                  { id: 'end', label: '关闭工单', type: 'end' }
+                ],
+                edges: [
+                  { from: 'start', to: 'receive' },
+                  { from: 'receive', to: 'assign' },
+                  { from: 'assign', to: 'handle' },
+                  { from: 'handle', to: 'upgrade' },
+                  { from: 'upgrade', to: 'escalate', label: '是' },
+                  { from: 'upgrade', to: 'satisfied', label: '否' },
+                  { from: 'escalate', to: 'handle', label: '回退' },
+                  { from: 'escalate', to: 'confirm' },
+                  { from: 'confirm', to: 'satisfied' },
+                  { from: 'satisfied', to: 'end', label: '是' }
+                ]
+              })
+            }
+          }
+        ]
+      }));
+      return;
+    }
+
     if (req.url === '/anthropic/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -368,6 +407,27 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.equal(aiRequests.at(-1).url, '/v1/chat/completions');
   assert.equal(aiRequests.at(-1).authorization, 'Bearer openai-test-key');
   assert.equal(aiRequests.at(-1).body.model, 'test-openai-model');
+
+  result = await request('/api/ai/flowchart', {
+    method: 'POST',
+    body: JSON.stringify({
+      prompt: 'Create an after-sales support flowchart',
+      config: {
+        providerFormat: 'openai',
+        baseUrl: `http://127.0.0.1:${aiPort}/branch`,
+        apiKey: 'openai-test-key',
+        model: 'test-openai-model'
+      }
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.match(result.body.xml, /pageWidth="1050"/);
+  assert.match(result.body.xml, /value="升级处理"[\s\S]*x="710"/);
+  assert.match(result.body.xml, /value="客户确认"[\s\S]*x="710"/);
+  assert.match(result.body.xml, /value="客户满意\?"[\s\S]*x="440"/);
+  assert.match(result.body.xml, /dashed=1/);
+  assert.match(result.body.xml, /<Array as="points">/);
+  assert.equal(aiRequests.at(-1).url, '/branch/chat/completions');
 
   result = await request('/api/ai/flowchart', {
     method: 'POST',
