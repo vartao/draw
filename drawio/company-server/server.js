@@ -58,6 +58,7 @@ const AI_PROVIDER_FORMATS = new Set(['openai', 'anthropic']);
 const AI_ALLOWED_ORIGINS = new Set([
   'https://api.openai.com',
   'https://api.anthropic.com',
+  'https://gate.ununu.ai',
   ...String(process.env.DRAWIO_AI_ALLOWED_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim().replace(/\/+$/, ''))
@@ -2028,7 +2029,7 @@ async function assertAiBaseUrlAllowed(config) {
     }
   }
 
-  throw publicError(400, 'ai_base_url_not_allowed', 'AI base URL is not allowed.');
+  throw publicError(400, 'ai_base_url_not_allowed', 'AI base URL is not in the server allowlist.');
 }
 
 function aiEndpoint(baseUrl, terminalPath) {
@@ -2041,8 +2042,9 @@ function aiEndpoint(baseUrl, terminalPath) {
   return new URL(`${normalized}/${terminalPath}`);
 }
 
-function normalizeAiConfig(input) {
+function normalizeAiConfig(input, options = {}) {
   const config = input && typeof input === 'object' ? input : {};
+  const requireModel = options.requireModel !== false;
   const format = normalizeAiFormat(config.providerFormat || config.format || config.provider || process.env.DRAWIO_AI_PROVIDER || 'openai');
   const baseUrlConfig = aiBaseUrlInput(config, format);
   const baseUrl = normalizeAiBaseUrl(baseUrlConfig.value, format);
@@ -2073,11 +2075,49 @@ function normalizeAiConfig(input) {
     throw publicError(400, 'ai_api_key_required', 'AI API key is required.');
   }
 
-  if (!model) {
+  if (requireModel && !model) {
     throw publicError(400, 'ai_model_required', 'AI model is required.');
   }
 
   return { format, baseUrl, baseUrlSource: baseUrlConfig.source, apiKey, model, maxTokens, temperature };
+}
+
+function normalizeAiModelRecord(row) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+
+  const id = String(row.id || row.name || '').trim();
+
+  if (!id) {
+    return null;
+  }
+
+  const label = String(row.display_name || row.displayName || row.name || row.id || id).trim();
+
+  return {
+    id,
+    label: label || id,
+    createdAt: typeof row.created_at === 'number' ? row.created_at : null
+  };
+}
+
+function normalizeAiModels(json) {
+  const rows = Array.isArray(json && json.data) ? json.data : Array.isArray(json && json.models) ? json.models : [];
+  const seen = new Set();
+  const models = [];
+
+  rows.forEach((row) => {
+    const model = normalizeAiModelRecord(row);
+
+    if (model && !seen.has(model.id)) {
+      seen.add(model.id);
+      models.push(model);
+    }
+  });
+
+  models.sort((a, b) => a.id.localeCompare(b.id));
+  return models;
 }
 
 function buildFlowchartInstruction(prompt) {
@@ -2243,6 +2283,37 @@ async function requestAnthropicFlowchart(prompt, config) {
   }
 
   return content;
+}
+
+async function requestOpenAiModels(config) {
+  const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'models'), {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`
+    }
+  });
+  const json = await readProviderJson(upstream);
+  return normalizeAiModels(json);
+}
+
+async function requestAnthropicModels(config) {
+  const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'models'), {
+    method: 'GET',
+    headers: {
+      'x-api-key': config.apiKey,
+      'anthropic-version': process.env.DRAWIO_AI_ANTHROPIC_VERSION || '2023-06-01'
+    }
+  });
+  const json = await readProviderJson(upstream);
+  return normalizeAiModels(json);
+}
+
+async function requestAiModels(config) {
+  if (config.format === 'anthropic') {
+    return requestAnthropicModels(config);
+  }
+
+  return requestOpenAiModels(config);
 }
 
 async function requestAiFlowchart(prompt, config) {
@@ -2500,6 +2571,46 @@ async function handleAiFlowchart(req, res, session) {
     sendJson(res, err.status || 500, {
       error: err.code || 'internal_server_error',
       message: err.publicMessage || 'Unable to generate flowchart.',
+      providerStatus: err.providerStatus || null
+    });
+  }
+}
+
+async function handleAiModels(req, res) {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res, 'POST');
+    return;
+  }
+
+  let payload;
+
+  try {
+    payload = await readJsonBody(req);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.code || 'invalid_json' });
+    return;
+  }
+
+  try {
+    const config = normalizeAiConfig(payload.config || {}, { requireModel: false });
+    await assertAiBaseUrlAllowed(config);
+    const models = await requestAiModels(config);
+
+    if (!models.length) {
+      throw publicError(502, 'ai_models_empty', 'AI provider did not return any models.');
+    }
+
+    sendJson(res, 200, {
+      models,
+      provider: {
+        format: config.format,
+        baseUrl: config.baseUrl
+      }
+    });
+  } catch (err) {
+    sendJson(res, err.status || 500, {
+      error: err.code || 'internal_server_error',
+      message: err.publicMessage || 'Unable to load AI models.',
       providerStatus: err.providerStatus || null
     });
   }
@@ -3524,6 +3635,11 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/ai/flowchart') {
     await handleAiFlowchart(req, res, session);
+    return;
+  }
+
+  if (pathname === '/api/ai/models') {
+    await handleAiModels(req, res);
     return;
   }
 

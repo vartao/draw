@@ -220,6 +220,17 @@ test('company API supports login, file isolation, save conflicts and share links
       body
     });
 
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: [
+          { id: 'test-openai-model', object: 'model' },
+          { id: 'test-openai-vision-model', object: 'model' }
+        ]
+      }));
+      return;
+    }
+
     if (req.url === '/v1/chat/completions') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -247,6 +258,16 @@ test('company API supports login, file isolation, save conflicts and share links
       return;
     }
 
+    if (req.url === '/anthropic/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: [
+          { id: 'test-anthropic-model', display_name: 'Test Anthropic Model' }
+        ]
+      }));
+      return;
+    }
+
     if (req.url === '/anthropic/messages') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -267,6 +288,21 @@ test('company API supports login, file isolation, save conflicts and share links
   cleanup.push(async () => {
     await closeServer(aiServer);
   });
+
+  result = await request('/api/ai/models', {
+    method: 'POST',
+    body: JSON.stringify({
+      config: {
+        providerFormat: 'openai',
+        baseUrl: `http://127.0.0.1:${aiPort}/v1`,
+        apiKey: 'openai-test-key'
+      }
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.deepEqual(result.body.models.map((model) => model.id), ['test-openai-model', 'test-openai-vision-model']);
+  assert.equal(aiRequests.at(-1).url, '/v1/models');
+  assert.equal(aiRequests.at(-1).authorization, 'Bearer openai-test-key');
 
   result = await request('/api/ai/flowchart', {
     method: 'POST',
@@ -307,6 +343,22 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.equal(aiRequests.at(-1).url, '/anthropic/messages');
   assert.equal(aiRequests.at(-1).apiKey, 'anthropic-test-key');
   assert.equal(aiRequests.at(-1).body.model, 'test-anthropic-model');
+
+  result = await request('/api/ai/models', {
+    method: 'POST',
+    body: JSON.stringify({
+      config: {
+        providerFormat: 'anthropic',
+        baseUrl: `http://127.0.0.1:${aiPort}/anthropic`,
+        apiKey: 'anthropic-test-key'
+      }
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.models[0].id, 'test-anthropic-model');
+  assert.equal(result.body.models[0].label, 'Test Anthropic Model');
+  assert.equal(aiRequests.at(-1).url, '/anthropic/models');
+  assert.equal(aiRequests.at(-1).apiKey, 'anthropic-test-key');
 
   result = await request('/api/ai/flowchart', {
     method: 'POST',
@@ -409,6 +461,7 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.equal(result.body.config.opsTokenRequired, false);
   assert.equal(result.body.config.host, '127.0.0.1');
   assert.equal(result.body.config.aiPrivateNetworksAllowed, true);
+  assert.ok(result.body.config.aiAllowedOrigins.includes('https://gate.ununu.ai'));
 
   result = await request('/api/employees');
   assert.equal(result.res.status, 200);

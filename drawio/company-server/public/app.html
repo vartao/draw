@@ -159,32 +159,29 @@
             <input id="aiBaseUrl" type="url" autocomplete="off">
           </label>
 
-          <label class="ai-field compact">
-            <span>模型</span>
-            <input id="aiModel" type="text" autocomplete="off" placeholder="填写模型名称">
+          <div class="ai-model-picker">
+            <label class="ai-field compact">
+              <span>模型</span>
+              <select id="aiModelSelect" disabled>
+                <option value="">填写 Base URL 和 API Key 后加载</option>
+              </select>
+            </label>
+            <button id="aiLoadModelsButton" type="button">加载模型</button>
+          </div>
+
+          <label id="aiManualModelField" class="ai-field compact hidden">
+            <span>手动模型名</span>
+            <input id="aiModel" type="text" autocomplete="off" placeholder="模型无法加载时填写">
           </label>
+          <div id="aiModelHint" class="ai-model-hint" role="status" aria-live="polite"></div>
 
           <label class="ai-field compact">
             <span>API Key</span>
             <input id="aiApiKey" type="password" autocomplete="off" placeholder="保存在当前浏览器">
           </label>
 
-          <div class="ai-config-grid">
-            <label class="ai-field compact">
-              <span>温度</span>
-              <input id="aiTemperature" type="number" min="0" max="1" step="0.1" value="0.2">
-            </label>
-            <label class="ai-field compact">
-              <span>输出长度</span>
-              <input id="aiMaxTokens" type="number" min="800" max="8000" step="100" value="2200">
-            </label>
-          </div>
-
-          <div class="ai-routing-preview" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
+          <input id="aiTemperature" type="hidden" value="0.2">
+          <input id="aiMaxTokens" type="hidden" value="2200">
         </aside>
       </div>
     </div>
@@ -260,7 +257,11 @@
       var aiStatus = document.getElementById('aiStatus');
       var aiProviderFormat = document.getElementById('aiProviderFormat');
       var aiBaseUrl = document.getElementById('aiBaseUrl');
+      var aiModelSelect = document.getElementById('aiModelSelect');
+      var aiLoadModelsButton = document.getElementById('aiLoadModelsButton');
+      var aiManualModelField = document.getElementById('aiManualModelField');
       var aiModel = document.getElementById('aiModel');
+      var aiModelHint = document.getElementById('aiModelHint');
       var aiApiKey = document.getElementById('aiApiKey');
       var aiTemperature = document.getElementById('aiTemperature');
       var aiMaxTokens = document.getElementById('aiMaxTokens');
@@ -777,11 +778,73 @@
         aiStatus.className = 'ai-status' + (tone ? ' ' + tone : '');
       }
 
+      function setAiModelHint(text, tone) {
+        aiModelHint.textContent = text || '';
+        aiModelHint.className = 'ai-model-hint' + (tone ? ' ' + tone : '');
+      }
+
+      function setAiManualModelVisible(visible) {
+        aiManualModelField.classList.toggle('hidden', !visible);
+      }
+
+      function resetAiModelOptions(message, selectedModel, options) {
+        var keepManualModelVisible = options && options.keepManualModelVisible;
+        aiModelSelect.innerHTML = '';
+        var option = document.createElement('option');
+        option.value = selectedModel || '';
+        option.textContent = selectedModel || message || '加载模型后选择';
+        aiModelSelect.appendChild(option);
+        aiModelSelect.disabled = !selectedModel;
+        aiModelSelect.value = selectedModel || '';
+
+        if (!keepManualModelVisible) {
+          setAiManualModelVisible(false);
+        }
+      }
+
+      function populateAiModels(models, selectedModel) {
+        var preferredModel = selectedModel || aiModel.value.trim();
+        var hasPreferred = false;
+        aiModelSelect.innerHTML = '';
+
+        (models || []).forEach(function (model) {
+          var option = document.createElement('option');
+          option.value = model.id;
+          option.textContent = model.label && model.label !== model.id ? model.label + ' · ' + model.id : model.id;
+          aiModelSelect.appendChild(option);
+
+          if (model.id === preferredModel) {
+            hasPreferred = true;
+          }
+        });
+
+        if (preferredModel && !hasPreferred) {
+          var manualOption = document.createElement('option');
+          manualOption.value = preferredModel;
+          manualOption.textContent = preferredModel + ' · 当前填写';
+          aiModelSelect.insertBefore(manualOption, aiModelSelect.firstChild);
+        }
+
+        aiModelSelect.disabled = aiModelSelect.options.length === 0;
+
+        if (!aiModelSelect.disabled) {
+          aiModelSelect.value = preferredModel || aiModelSelect.options[0].value;
+          aiModel.value = aiModelSelect.value;
+        }
+
+        setAiManualModelVisible(false);
+      }
+
+      function markAiModelsStale() {
+        resetAiModelOptions('配置已变化，请重新加载模型', aiModel.value.trim());
+        setAiModelHint('配置已变化，请重新加载模型', 'warn');
+      }
+
       function collectAiConfig() {
         return {
           providerFormat: aiProviderFormat.value,
           baseUrl: aiBaseUrl.value.trim(),
-          model: aiModel.value.trim(),
+          model: (aiModel.value || aiModelSelect.value).trim(),
           apiKey: aiApiKey.value.trim(),
           temperature: aiTemperature.value,
           maxTokens: aiMaxTokens.value
@@ -807,6 +870,9 @@
         aiProviderFormat.value = config.providerFormat === 'anthropic' ? 'anthropic' : 'openai';
         aiBaseUrl.value = config.baseUrl || providerDefaultBaseUrl(aiProviderFormat.value);
         aiModel.value = config.model || '';
+        resetAiModelOptions('填写 Base URL 和 API Key 后加载', config.model || '');
+        setAiModelHint(config.model ? '已使用保存的模型名，可重新加载模型列表' : '');
+        setAiManualModelVisible(false);
         aiApiKey.value = config.apiKey || '';
         aiTemperature.value = config.temperature || '0.2';
         aiMaxTokens.value = config.maxTokens || '2200';
@@ -816,6 +882,56 @@
         localStorage.setItem(aiStorageKey, JSON.stringify(collectAiConfig()));
         setAiStatus('配置已保存', 'ok');
         notify('AI 配置已保存到当前浏览器。', 'ok');
+      }
+
+      function loadAiModels() {
+        var baseUrl = aiBaseUrl.value.trim();
+        var apiKey = aiApiKey.value.trim();
+
+        if (!baseUrl) {
+          setAiModelHint('请先填写 Base URL', 'error');
+          setAiStatus('请先填写 Base URL', 'error');
+          aiBaseUrl.focus();
+          return;
+        }
+
+        if (!apiKey) {
+          setAiModelHint('请先填写 API Key', 'error');
+          setAiStatus('请先填写 API Key', 'error');
+          aiApiKey.focus();
+          return;
+        }
+
+        aiLoadModelsButton.disabled = true;
+        aiModelSelect.disabled = true;
+        setAiModelHint('正在加载模型');
+        setAiStatus('正在加载模型列表');
+
+        api('/api/ai/models', {
+          method: 'POST',
+          body: JSON.stringify({
+            config: collectAiConfig()
+          })
+        })
+          .then(function (body) {
+            populateAiModels(body.models || [], aiModel.value.trim());
+            setAiModelHint('已加载 ' + (body.models || []).length + ' 个模型', 'ok');
+            setAiStatus('模型列表已加载', 'ok');
+            notify('模型列表已加载。', 'ok');
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              var message = aiErrorText(err);
+              resetAiModelOptions('加载失败，可手动填写模型名', aiModel.value.trim());
+              setAiManualModelVisible(true);
+              setAiModelHint(message, 'error');
+              setAiStatus(message, 'error');
+              notify(message, 'error');
+            }
+          })
+          .finally(function () {
+            aiLoadModelsButton.disabled = false;
+          });
       }
 
       function openAiPanel() {
@@ -837,10 +953,12 @@
           ai_api_key_required: '请填写 API Key，或在服务端配置 AI 环境变量。',
           ai_model_required: '请填写模型名称，或在服务端配置默认模型。',
           invalid_ai_base_url: 'Base URL 格式不正确。',
+          ai_base_url_not_allowed: '这个 Base URL 不在服务端白名单，请联系管理员添加域名。',
           unsupported_ai_provider: '暂不支持这个接口格式。',
           ai_provider_timeout: '模型接口响应超时。',
           ai_provider_unreachable: '无法连接模型接口。',
           ai_provider_error: err && err.message ? err.message : '模型接口返回错误。',
+          ai_models_empty: '没有从接口加载到可用模型。',
           ai_response_not_json: '模型返回内容不是可解析的流程图结构。',
           ai_invalid_response: '模型返回内容不完整。'
         };
@@ -1494,6 +1612,17 @@
         }
 
         lastAiProviderFormat = aiProviderFormat.value;
+        markAiModelsStale();
+      });
+
+      aiBaseUrl.addEventListener('input', markAiModelsStale);
+      aiApiKey.addEventListener('input', markAiModelsStale);
+      aiModelSelect.addEventListener('change', function () {
+        aiModel.value = aiModelSelect.value;
+        setAiModelHint(aiModel.value ? '已选择 ' + aiModel.value : '');
+      });
+      aiModel.addEventListener('input', function () {
+        resetAiModelOptions('加载模型后选择', aiModel.value.trim(), { keepManualModelVisible: true });
       });
 
       Array.prototype.forEach.call(document.querySelectorAll('[data-ai-example]'), function (button) {
@@ -1559,6 +1688,7 @@
       aiEntryButton.addEventListener('click', openAiPanel);
       aiCloseButton.addEventListener('click', closeAiPanel);
       aiGenerateButton.addEventListener('click', generateFlowchart);
+      aiLoadModelsButton.addEventListener('click', loadAiModels);
       aiSaveConfigButton.addEventListener('click', saveAiConfig);
       aiAssistant.addEventListener('mousedown', function (evt) {
         if (evt.target === aiAssistant) {

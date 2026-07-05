@@ -66,6 +66,7 @@ New-NetFirewallRule -DisplayName "Company Draw.io 8081" -Direction Inbound -Acti
 - Read-only share token API and `/share.html` viewer page.
 - XML download for owner and share visitor.
 - AI flowchart assistant with OpenAI-compatible and Anthropic Messages API formats.
+- AI model list loading for OpenAI-compatible and Anthropic model endpoints.
 - Internal employee-to-employee sharing with per-diagram chat threads.
 
 ## API
@@ -107,6 +108,7 @@ GET /api/health
 GET /api/ops/status
 
 POST /api/ai/flowchart
+POST /api/ai/models
 
 POST /export
 ```
@@ -124,8 +126,8 @@ server configured with `DRAWIO_EXPORT_URL`.
   access is intended.
 - Browser state-changing requests are checked for same-origin headers.
 - Login and invite-code registration attempts are rate-limited in memory.
-- Client-supplied AI base URLs are limited to official OpenAI and Anthropic
-  origins plus `DRAWIO_AI_ALLOWED_ORIGINS`.
+- Client-supplied AI base URLs are limited to official OpenAI, Anthropic and
+  `gate.ununu.ai` origins plus `DRAWIO_AI_ALLOWED_ORIGINS`.
 - Local/private AI endpoints are blocked unless `DRAWIO_AI_ALLOW_PRIVATE=1`.
 - Reverse proxy headers are ignored unless `DRAWIO_TRUST_PROXY=1`.
 - Set `DRAWIO_COOKIE_SECURE=1` when serving through HTTPS.
