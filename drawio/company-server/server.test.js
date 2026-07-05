@@ -231,6 +231,12 @@ test('company API supports login, file isolation, save conflicts and share links
       return;
     }
 
+    if (req.url === '/html/models') {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!DOCTYPE html><html lang="zh-CN"><head><title>Not Found</title></head><body>not found</body></html>');
+      return;
+    }
+
     if (req.url === '/v1/chat/completions') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -303,6 +309,23 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.deepEqual(result.body.models.map((model) => model.id), ['test-openai-model', 'test-openai-vision-model']);
   assert.equal(aiRequests.at(-1).url, '/v1/models');
   assert.equal(aiRequests.at(-1).authorization, 'Bearer openai-test-key');
+
+  result = await request('/api/ai/models', {
+    method: 'POST',
+    body: JSON.stringify({
+      config: {
+        providerFormat: 'openai',
+        baseUrl: `http://127.0.0.1:${aiPort}/html`,
+        apiKey: 'openai-test-key'
+      }
+    })
+  });
+  assert.equal(result.res.status, 502);
+  assert.equal(result.body.error, 'ai_provider_non_json');
+  assert.equal(result.body.providerStatus, 404);
+  assert.match(result.body.message, /web page instead of JSON/);
+  assert.doesNotMatch(result.body.message, /<!DOCTYPE|<html|_next\/static/i);
+  assert.equal(aiRequests.at(-1).url, '/html/models');
 
   result = await request('/api/ai/flowchart', {
     method: 'POST',

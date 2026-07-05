@@ -2138,7 +2138,21 @@ function buildFlowchartInstruction(prompt) {
   ].join('\n');
 }
 
-function providerErrorMessage(json, fallbackText) {
+function isHtmlLikeProviderResponse(text, contentType = '') {
+  const normalizedContentType = String(contentType || '').toLowerCase();
+
+  if (normalizedContentType.includes('text/html')) {
+    return true;
+  }
+
+  return /^\s*(?:<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(String(text || ''));
+}
+
+function compactProviderText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+function providerErrorMessage(json, fallbackText, contentType) {
   if (json && typeof json === 'object') {
     if (json.error && typeof json.error.message === 'string') {
       return json.error.message;
@@ -2149,7 +2163,11 @@ function providerErrorMessage(json, fallbackText) {
     }
   }
 
-  return String(fallbackText || '').slice(0, 240) || 'AI provider returned an error.';
+  if (isHtmlLikeProviderResponse(fallbackText, contentType)) {
+    return 'AI provider returned a web page instead of JSON. Check the Base URL and endpoint path.';
+  }
+
+  return compactProviderText(fallbackText) || 'AI provider returned an error.';
 }
 
 async function fetchAiProvider(url, options) {
@@ -2171,18 +2189,21 @@ async function fetchAiProvider(url, options) {
 
 async function readProviderJson(upstream) {
   const text = await upstream.text();
+  const contentType = upstream.headers && typeof upstream.headers.get === 'function' ? upstream.headers.get('content-type') : '';
   let json = null;
 
   try {
     json = text ? JSON.parse(text) : null;
   } catch (_err) {
     if (upstream.ok) {
-      throw publicError(502, 'ai_invalid_response', 'AI provider returned non-JSON content.');
+      throw publicError(502, 'ai_provider_non_json', providerErrorMessage(null, text, contentType), {
+        providerStatus: upstream.status
+      });
     }
   }
 
   if (!upstream.ok) {
-    throw publicError(502, 'ai_provider_error', providerErrorMessage(json, text), {
+    throw publicError(502, json ? 'ai_provider_error' : 'ai_provider_non_json', providerErrorMessage(json, text, contentType), {
       providerStatus: upstream.status
     });
   }
@@ -2225,6 +2246,7 @@ async function requestOpenAiFlowchart(prompt, config) {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
+      Accept: 'application/json',
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -2258,6 +2280,7 @@ async function requestAnthropicFlowchart(prompt, config) {
   const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'messages'), {
     method: 'POST',
     headers: {
+      Accept: 'application/json',
       'x-api-key': config.apiKey,
       'anthropic-version': process.env.DRAWIO_AI_ANTHROPIC_VERSION || '2023-06-01',
       'Content-Type': 'application/json'
@@ -2289,6 +2312,7 @@ async function requestOpenAiModels(config) {
   const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'models'), {
     method: 'GET',
     headers: {
+      Accept: 'application/json',
       Authorization: `Bearer ${config.apiKey}`
     }
   });
@@ -2300,6 +2324,7 @@ async function requestAnthropicModels(config) {
   const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'models'), {
     method: 'GET',
     headers: {
+      Accept: 'application/json',
       'x-api-key': config.apiKey,
       'anthropic-version': process.env.DRAWIO_AI_ANTHROPIC_VERSION || '2023-06-01'
     }

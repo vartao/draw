@@ -921,7 +921,7 @@
           })
           .catch(function (err) {
             if (!err || err.error !== 'not_authenticated') {
-              var message = aiErrorText(err);
+              var message = aiModelLoadErrorText(err);
               resetAiModelOptions('加载失败，可手动填写模型名', aiModel.value.trim());
               setAiManualModelVisible(true);
               setAiModelHint(message, 'error');
@@ -947,6 +947,7 @@
 
       function aiErrorText(err) {
         var code = err && err.error;
+        var safeMessage = sanitizeAiMessage(err && err.message, '');
         var messages = {
           prompt_required: '请先输入提示词。',
           prompt_too_large: '提示词太长，请压缩到 4000 字以内。',
@@ -957,13 +958,36 @@
           unsupported_ai_provider: '暂不支持这个接口格式。',
           ai_provider_timeout: '模型接口响应超时。',
           ai_provider_unreachable: '无法连接模型接口。',
-          ai_provider_error: err && err.message ? err.message : '模型接口返回错误。',
-          ai_models_empty: '没有从接口加载到可用模型。',
+          ai_provider_error: safeMessage || '模型接口返回错误，请检查 Base URL、API Key 和模型名。',
+          ai_provider_non_json: '模型接口返回了网页而不是 JSON，请检查 Base URL 是否是 API 地址。',
+          ai_models_empty: '没有从接口加载到可用模型，可手动填写模型名。',
           ai_response_not_json: '模型返回内容不是可解析的流程图结构。',
           ai_invalid_response: '模型返回内容不完整。'
         };
 
         return messages[code] || '生成失败，请检查模型配置后重试。';
+      }
+
+      function sanitizeAiMessage(message, fallback) {
+        var text = String(message || '').replace(/\s+/g, ' ').trim();
+
+        if (!text) {
+          return fallback || '';
+        }
+
+        if (/<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]|\/_next\/static/i.test(text)) {
+          return fallback || '';
+        }
+
+        return text.slice(0, 160);
+      }
+
+      function aiModelLoadErrorText(err) {
+        if (err && (err.error === 'ai_provider_non_json' || err.providerStatus === 404)) {
+          return '这个服务没有开放模型列表，请手动填写模型名后直接生成。';
+        }
+
+        return aiErrorText(err);
       }
 
       function diagramNameFromTitle(title) {

@@ -1667,6 +1667,7 @@ textarea:focus {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .ai-model-hint.ok {
@@ -1706,6 +1707,8 @@ textarea:focus {
   min-height: 22px;
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .ai-status.ok {
