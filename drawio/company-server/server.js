@@ -2519,7 +2519,7 @@ function flowchartEdgeStyle(sourceLayout, targetLayout) {
   const backward = targetLayout.index <= sourceLayout.index;
   const common = [
     'edgeStyle=orthogonalEdgeStyle',
-    'rounded=1',
+    'rounded=0',
     'orthogonalLoop=1',
     'jettySize=auto',
     'html=1',
@@ -2608,7 +2608,7 @@ function renderFlowchartXml(spec) {
     const cellId = `ai_node_${node.id}`;
     const size = flowchartNodeSize(node.type);
     const lane = lanes.get(node.id) || 0;
-    const x = roundedGrid(centerX + lane * laneGap - size.width / 2);
+    const x = centerX + lane * laneGap - size.width / 2;
     const y = startY + index * gapY;
 
     nodeCellIds.set(node.id, cellId);

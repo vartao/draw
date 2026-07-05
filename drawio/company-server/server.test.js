@@ -422,9 +422,10 @@ test('company API supports login, file isolation, save conflicts and share links
   });
   assert.equal(result.res.status, 200);
   assert.match(result.body.xml, /pageWidth="1050"/);
-  assert.match(result.body.xml, /value="升级处理"[\s\S]*x="710"/);
-  assert.match(result.body.xml, /value="客户确认"[\s\S]*x="710"/);
-  assert.match(result.body.xml, /value="客户满意\?"[\s\S]*x="440"/);
+  assert.match(result.body.xml, /value="升级处理"[\s\S]*x="705"/);
+  assert.match(result.body.xml, /value="客户确认"[\s\S]*x="705"/);
+  assert.match(result.body.xml, /value="客户满意\?"[\s\S]*x="437"/);
+  assert.match(result.body.xml, /rounded=0/);
   assert.match(result.body.xml, /dashed=1/);
   assert.match(result.body.xml, /<Array as="points">/);
   assert.equal(aiRequests.at(-1).url, '/branch/chat/completions');
