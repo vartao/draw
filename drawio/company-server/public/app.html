@@ -268,6 +268,7 @@
       var aiSaveConfigButton = document.getElementById('aiSaveConfigButton');
       var logoutButton = document.getElementById('logoutButton');
       var aiStorageKey = 'companyDrawio.aiConfig.v1';
+      var aiSaveConfigTimer = null;
       var currentEmployeeId = '';
       var currentProfileName = '';
       var currentDisplayName = '';
@@ -838,6 +839,7 @@
       function markAiModelsStale() {
         resetAiModelOptions('配置已变化，请重新加载模型', aiModel.value.trim());
         setAiModelHint('配置已变化，请重新加载模型', 'warn');
+        scheduleAiConfigSave();
       }
 
       function collectAiConfig() {
@@ -878,8 +880,29 @@
         aiMaxTokens.value = config.maxTokens || '2200';
       }
 
+      function persistAiConfig() {
+        try {
+          localStorage.setItem(aiStorageKey, JSON.stringify(collectAiConfig()));
+          return true;
+        } catch (_err) {
+          return false;
+        }
+      }
+
+      function scheduleAiConfigSave() {
+        window.clearTimeout(aiSaveConfigTimer);
+        aiSaveConfigTimer = window.setTimeout(function () {
+          persistAiConfig();
+        }, 250);
+      }
+
       function saveAiConfig() {
-        localStorage.setItem(aiStorageKey, JSON.stringify(collectAiConfig()));
+        if (!persistAiConfig()) {
+          setAiStatus('配置保存失败', 'error');
+          notify('AI 配置保存失败，请检查浏览器存储权限。', 'error');
+          return;
+        }
+
         setAiStatus('配置已保存', 'ok');
         notify('AI 配置已保存到当前浏览器。', 'ok');
       }
@@ -902,6 +925,7 @@
           return;
         }
 
+        persistAiConfig();
         aiLoadModelsButton.disabled = true;
         aiModelSelect.disabled = true;
         setAiModelHint('正在加载模型');
@@ -915,6 +939,7 @@
         })
           .then(function (body) {
             populateAiModels(body.models || [], aiModel.value.trim());
+            scheduleAiConfigSave();
             setAiModelHint('已加载 ' + (body.models || []).length + ' 个模型', 'ok');
             setAiStatus('模型列表已加载', 'ok');
             notify('模型列表已加载。', 'ok');
@@ -1013,6 +1038,7 @@
         }
 
         aiGenerateButton.disabled = true;
+        persistAiConfig();
         setAiStatus('正在生成流程结构');
 
         api('/api/ai/flowchart', {
@@ -1637,6 +1663,7 @@
 
         lastAiProviderFormat = aiProviderFormat.value;
         markAiModelsStale();
+        scheduleAiConfigSave();
       });
 
       aiBaseUrl.addEventListener('input', markAiModelsStale);
@@ -1644,9 +1671,11 @@
       aiModelSelect.addEventListener('change', function () {
         aiModel.value = aiModelSelect.value;
         setAiModelHint(aiModel.value ? '已选择 ' + aiModel.value : '');
+        scheduleAiConfigSave();
       });
       aiModel.addEventListener('input', function () {
         resetAiModelOptions('加载模型后选择', aiModel.value.trim(), { keepManualModelVisible: true });
+        scheduleAiConfigSave();
       });
 
       Array.prototype.forEach.call(document.querySelectorAll('[data-ai-example]'), function (button) {
