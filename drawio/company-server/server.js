@@ -2076,6 +2076,14 @@ function providerErrorMessage(json, fallbackText, contentType) {
   return compactProviderText(fallbackText) || 'AI provider returned an error.';
 }
 
+function isProviderAuthFailure(status, message) {
+  if (status === 401 || status === 403) {
+    return true;
+  }
+
+  return /invalid\s+(?:api\s+)?(?:key|token)|unauthori[sz]ed|forbidden|authentication|auth\s+failed/i.test(String(message || ''));
+}
+
 async function fetchAiProvider(url, options) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1000, AI_TIMEOUT_MS));
@@ -2109,7 +2117,10 @@ async function readProviderJson(upstream) {
   }
 
   if (!upstream.ok) {
-    throw publicError(502, json ? 'ai_provider_error' : 'ai_provider_non_json', providerErrorMessage(json, text, contentType), {
+    const message = providerErrorMessage(json, text, contentType);
+    const authFailed = isProviderAuthFailure(upstream.status, message);
+
+    throw publicError(502, authFailed ? 'ai_provider_auth_failed' : json ? 'ai_provider_error' : 'ai_provider_non_json', authFailed ? 'AI provider rejected the API key.' : message, {
       providerStatus: upstream.status
     });
   }

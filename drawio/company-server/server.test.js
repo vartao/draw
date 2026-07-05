@@ -236,6 +236,12 @@ test('company API supports login, file isolation, save conflicts and share links
       return;
     }
 
+    if (req.url === '/auth/models') {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: { message: 'Invalid token (request id: test-request-id)' } }));
+      return;
+    }
+
     if (req.url === '/v1/chat/completions') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -325,6 +331,22 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.match(result.body.message, /web page instead of JSON/);
   assert.doesNotMatch(result.body.message, /<!DOCTYPE|<html|_next\/static/i);
   assert.equal(aiRequests.at(-1).url, '/html/models');
+
+  result = await request('/api/ai/models', {
+    method: 'POST',
+    body: JSON.stringify({
+      config: {
+        providerFormat: 'openai',
+        baseUrl: `http://127.0.0.1:${aiPort}/auth`,
+        apiKey: 'bad-openai-test-key'
+      }
+    })
+  });
+  assert.equal(result.res.status, 502);
+  assert.equal(result.body.error, 'ai_provider_auth_failed');
+  assert.equal(result.body.providerStatus, 401);
+  assert.equal(result.body.message, 'AI provider rejected the API key.');
+  assert.equal(aiRequests.at(-1).url, '/auth/models');
 
   result = await request('/api/ai/flowchart', {
     method: 'POST',
