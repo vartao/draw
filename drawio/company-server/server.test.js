@@ -9,7 +9,6 @@ const assert = require('node:assert/strict');
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'company-drawio-test-'));
 process.env.DRAWIO_DATA_DIR = testDataDir;
 process.env.DRAWIO_WEBAPP_DIR = path.resolve(__dirname, '..', 'src', 'main', 'webapp');
-process.env.DRAWIO_AI_ALLOW_PRIVATE = '1';
 
 const { fetchCompat, handleRequest } = require('./server');
 
@@ -383,21 +382,6 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.equal(aiRequests.at(-1).url, '/anthropic/models');
   assert.equal(aiRequests.at(-1).apiKey, 'anthropic-test-key');
 
-  result = await request('/api/ai/flowchart', {
-    method: 'POST',
-    body: JSON.stringify({
-      prompt: 'Create a blocked flowchart',
-      config: {
-        providerFormat: 'openai',
-        baseUrl: 'http://203.0.113.10/v1',
-        apiKey: 'leak-test-key',
-        model: 'test-model'
-      }
-    })
-  });
-  assert.equal(result.res.status, 400);
-  assert.equal(result.body.error, 'ai_base_url_not_allowed');
-
   const exportServer = http.createServer(async (req, res) => {
     const chunks = [];
 
@@ -483,8 +467,7 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.equal(result.body.counts.diagrams, 1);
   assert.equal(result.body.config.opsTokenRequired, false);
   assert.equal(result.body.config.host, '127.0.0.1');
-  assert.equal(result.body.config.aiPrivateNetworksAllowed, true);
-  assert.ok(result.body.config.aiAllowedOrigins.includes('https://gate.ununu.ai'));
+  assert.equal(result.body.config.aiClientBaseUrlsAllowed, true);
 
   result = await request('/api/employees');
   assert.equal(result.res.status, 200);

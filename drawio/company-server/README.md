@@ -126,9 +126,8 @@ server configured with `DRAWIO_EXPORT_URL`.
   access is intended.
 - Browser state-changing requests are checked for same-origin headers.
 - Login and invite-code registration attempts are rate-limited in memory.
-- Client-supplied AI base URLs are limited to official OpenAI, Anthropic and
-  `gate.ununu.ai` origins plus `DRAWIO_AI_ALLOWED_ORIGINS`.
-- Local/private AI endpoints are blocked unless `DRAWIO_AI_ALLOW_PRIVATE=1`.
+- Client-supplied AI base URLs are accepted for any HTTP/HTTPS provider.
+  Keep API keys scoped to the provider they are entered for.
 - Reverse proxy headers are ignored unless `DRAWIO_TRUST_PROXY=1`.
 - Set `DRAWIO_COOKIE_SECURE=1` when serving through HTTPS.
 
@@ -193,8 +192,6 @@ data/
 | `DRAWIO_AI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` | unset | Anthropic Messages API key |
 | `DRAWIO_AI_ANTHROPIC_MODEL` / `ANTHROPIC_MODEL` | unset | Anthropic model name |
 | `DRAWIO_AI_ANTHROPIC_BASE_URL` / `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | Anthropic Messages base URL |
-| `DRAWIO_AI_ALLOWED_ORIGINS` | unset | comma-separated extra origins allowed for client-supplied AI base URLs |
-| `DRAWIO_AI_ALLOW_PRIVATE` | unset | set to `1` to allow client-supplied localhost/private AI endpoints |
 | `DRAWIO_AI_MAX_PROMPT_CHARS` | `4000` | maximum prompt length for flowchart generation |
 | `DRAWIO_AI_TIMEOUT_MS` | `45000` | upstream AI request timeout |
 | `DRAWIO_AI_MAX_TOKENS` | `2200` | default AI output token budget |

@@ -1,10 +1,8 @@
 const crypto = require('crypto');
-const dns = require('dns/promises');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const http = require('http');
 const https = require('https');
-const net = require('net');
 const os = require('os');
 const path = require('path');
 
@@ -42,7 +40,6 @@ const TRUST_PROXY = process.env.DRAWIO_TRUST_PROXY === '1';
 const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.DRAWIO_AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.DRAWIO_LOGIN_RATE_LIMIT_MAX || 20);
 const REGISTER_RATE_LIMIT_MAX = Number(process.env.DRAWIO_REGISTER_RATE_LIMIT_MAX || 20);
-const AI_ALLOW_PRIVATE = process.env.DRAWIO_AI_ALLOW_PRIVATE === '1';
 const ACCESS_LOG_FILE = String(process.env.DRAWIO_ACCESS_LOG || '').toLowerCase() === 'off' ?
   null :
   path.resolve(process.env.DRAWIO_ACCESS_LOG || path.join(LOG_DIR, 'access.log'));
@@ -55,15 +52,6 @@ const INVITE_CODE_PATTERN = /^[A-Za-z0-9_-]{6,96}$/;
 const ACCOUNT_ROLES = new Set(['user', 'admin']);
 const ACCOUNT_STATUSES = new Set(['pending', 'active', 'disabled']);
 const AI_PROVIDER_FORMATS = new Set(['openai', 'anthropic']);
-const AI_ALLOWED_ORIGINS = new Set([
-  'https://api.openai.com',
-  'https://api.anthropic.com',
-  'https://gate.ununu.ai',
-  ...String(process.env.DRAWIO_AI_ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((origin) => origin.trim().replace(/\/+$/, ''))
-    .filter(Boolean)
-]);
 const AI_NODE_TYPES = new Set(['start', 'process', 'decision', 'data', 'end']);
 
 const EMPTY_DIAGRAM_XML = '<mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>';
@@ -908,8 +896,7 @@ async function getOperationalStatus() {
       maxChatMessageChars: MAX_CHAT_MESSAGE_CHARS,
       maxInternalShareRecipients: MAX_INTERNAL_SHARE_RECIPIENTS,
       aiTimeoutMs: AI_TIMEOUT_MS,
-      aiAllowedOrigins: Array.from(AI_ALLOWED_ORIGINS).sort(),
-      aiPrivateNetworksAllowed: AI_ALLOW_PRIVATE,
+      aiClientBaseUrlsAllowed: true,
       aiOpenAiConfigured: Boolean(findEnv('DRAWIO_AI_OPENAI_API_KEY', 'DRAWIO_OPENAI_API_KEY', 'OPENAI_API_KEY')),
       aiAnthropicConfigured: Boolean(findEnv('DRAWIO_AI_ANTHROPIC_API_KEY', 'DRAWIO_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY')),
       secureCookie: process.env.DRAWIO_COOKIE_SECURE === '1',
@@ -1951,87 +1938,6 @@ function aiBaseUrlInput(config, format) {
   return { value: envBaseUrl, source: envBaseUrl ? 'environment' : 'default' };
 }
 
-function isPrivateHostname(hostname) {
-  const normalized = String(hostname || '').toLowerCase();
-  return normalized === 'localhost' || normalized.endsWith('.localhost');
-}
-
-function isPrivateIpAddress(address) {
-  const ipVersion = net.isIP(address);
-
-  if (ipVersion === 4) {
-    const parts = address.split('.').map((part) => Number(part));
-
-    return (
-      parts[0] === 0 ||
-      parts[0] === 10 ||
-      parts[0] === 127 ||
-      (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) ||
-      (parts[0] === 169 && parts[1] === 254) ||
-      (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
-      (parts[0] === 192 && parts[1] === 168)
-    );
-  }
-
-  if (ipVersion === 6) {
-    const normalized = address.toLowerCase();
-
-    if (normalized.startsWith('::ffff:')) {
-      return isPrivateIpAddress(normalized.slice('::ffff:'.length));
-    }
-
-    return (
-      normalized === '::' ||
-      normalized === '::1' ||
-      normalized.startsWith('fc') ||
-      normalized.startsWith('fd') ||
-      normalized.startsWith('fe80:')
-    );
-  }
-
-  return false;
-}
-
-async function resolveHostAddresses(hostname) {
-  if (net.isIP(hostname)) {
-    return [hostname];
-  }
-
-  if (isPrivateHostname(hostname)) {
-    return ['127.0.0.1'];
-  }
-
-  const rows = await dns.lookup(hostname, { all: true, verbatim: true });
-  return rows.map((row) => row.address);
-}
-
-async function assertAiBaseUrlAllowed(config) {
-  if (config.baseUrlSource !== 'client') {
-    return;
-  }
-
-  const url = new URL(config.baseUrl);
-
-  if (AI_ALLOWED_ORIGINS.has(url.origin)) {
-    return;
-  }
-
-  // Client-supplied AI endpoints are restricted so this route cannot become an SSRF or API-key exfiltration proxy.
-  if (AI_ALLOW_PRIVATE) {
-    try {
-      const addresses = await resolveHostAddresses(url.hostname);
-
-      if (addresses.length > 0 && addresses.every(isPrivateIpAddress)) {
-        return;
-      }
-    } catch (_err) {
-      // Fall through to the public error below.
-    }
-  }
-
-  throw publicError(400, 'ai_base_url_not_allowed', 'AI base URL is not in the server allowlist.');
-}
-
 function aiEndpoint(baseUrl, terminalPath) {
   const normalized = String(baseUrl || '').replace(/\/+$/, '');
 
@@ -2572,7 +2478,6 @@ async function handleAiFlowchart(req, res, session) {
     }
 
     const config = normalizeAiConfig(payload.config || {});
-    await assertAiBaseUrlAllowed(config);
     const aiText = await requestAiFlowchart(prompt, config);
     const rawSpec = parseAiJsonObject(aiText);
     const spec = normalizeFlowchartSpec(rawSpec, prompt);
@@ -2618,7 +2523,6 @@ async function handleAiModels(req, res) {
 
   try {
     const config = normalizeAiConfig(payload.config || {}, { requireModel: false });
-    await assertAiBaseUrlAllowed(config);
     const models = await requestAiModels(config);
 
     if (!models.length) {
