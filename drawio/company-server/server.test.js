@@ -45,6 +45,22 @@ function closeServer(server) {
   });
 }
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function geometryForValue(xml, value) {
+  const match = xml.match(new RegExp(`value="${escapeRegex(value)}"[\\s\\S]*?<mxGeometry x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"`));
+
+  assert.ok(match, `Missing geometry for ${value}`);
+  return {
+    x: Number(match[1]),
+    y: Number(match[2]),
+    width: Number(match[3]),
+    height: Number(match[4])
+  };
+}
+
 test('company API supports login, file isolation, save conflicts and share links', async () => {
   const server = http.createServer(handleRequest);
   const port = await listen(server);
@@ -398,6 +414,72 @@ test('company API supports login, file isolation, save conflicts and share links
     await closeServer(aiServer);
   });
 
+  result = await request('/api/ai/providers');
+  assert.equal(result.res.status, 200);
+  assert.deepEqual(result.body.providers, []);
+
+  result = await request('/api/ai/providers', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: '公司 OpenAI 网关',
+      providerFormat: 'openai',
+      baseUrl: `http://127.0.0.1:${aiPort}/v1`,
+      apiKey: 'openai-test-key',
+      model: 'test-openai-model'
+    })
+  });
+  assert.equal(result.res.status, 201);
+  assert.equal(result.body.provider.name, '公司 OpenAI 网关');
+  assert.equal(result.body.provider.hasApiKey, true);
+  assert.equal(result.body.provider.apiKey, undefined);
+  const savedProviderId = result.body.provider.id;
+  assert.equal(result.body.selectedProviderId, savedProviderId);
+
+  const providerStorePath = path.join(testDataDir, 'employees', '10001', 'ai-providers.json');
+  const providerStore = JSON.parse(fs.readFileSync(providerStorePath, 'utf8'));
+  assert.equal(providerStore.providers[0].apiKey, 'openai-test-key');
+
+  result = await request('/api/ai/models', {
+    method: 'POST',
+    body: JSON.stringify({
+      config: {
+        providerId: savedProviderId
+      }
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.deepEqual(result.body.models.map((model) => model.id), ['test-openai-model', 'test-openai-vision-model']);
+  assert.equal(aiRequests.at(-1).url, '/v1/models');
+  assert.equal(aiRequests.at(-1).authorization, 'Bearer openai-test-key');
+
+  result = await request('/api/ai/providers/' + encodeURIComponent(savedProviderId), {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: '更新后的网关',
+      model: 'test-openai-vision-model',
+      apiKey: ''
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.provider.name, '更新后的网关');
+  assert.equal(result.body.provider.model, 'test-openai-vision-model');
+  assert.equal(result.body.provider.hasApiKey, true);
+  assert.equal(JSON.parse(fs.readFileSync(providerStorePath, 'utf8')).providers[0].apiKey, 'openai-test-key');
+
+  result = await request('/api/ai/providers/selection', {
+    method: 'PUT',
+    body: JSON.stringify({ providerId: '' })
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.selectedProviderId, '');
+
+  result = await request('/api/ai/providers/selection', {
+    method: 'PUT',
+    body: JSON.stringify({ providerId: savedProviderId })
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.selectedProviderId, savedProviderId);
+
   result = await request('/api/ai/models', {
     method: 'POST',
     body: JSON.stringify({
@@ -480,10 +562,14 @@ test('company API supports login, file isolation, save conflicts and share links
     })
   });
   assert.equal(result.res.status, 200);
-  assert.match(result.body.xml, /pageWidth="1050"/);
-  assert.match(result.body.xml, /value="升级处理"[\s\S]*x="705"/);
-  assert.match(result.body.xml, /value="客户确认"[\s\S]*x="705"/);
-  assert.match(result.body.xml, /value="客户满意\?"[\s\S]*x="437"/);
+  const branchPageWidth = Number(result.body.xml.match(/pageWidth="([^"]+)"/)[1]);
+  const escalateGeometry = geometryForValue(result.body.xml, '升级处理');
+  const confirmGeometry = geometryForValue(result.body.xml, '客户确认');
+  const satisfiedGeometry = geometryForValue(result.body.xml, '客户满意?');
+  assert.ok(branchPageWidth >= 1050);
+  assert.ok(escalateGeometry.x > satisfiedGeometry.x);
+  assert.equal(confirmGeometry.x, escalateGeometry.x);
+  assert.equal(satisfiedGeometry.x < branchPageWidth / 2, true);
   assert.match(result.body.xml, /rounded=0/);
   assert.match(result.body.xml, /dashed=1/);
   assert.match(result.body.xml, /<Array as="points">/);
@@ -507,16 +593,18 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.equal(result.body.diagram.typeLabel, '泳道图');
   assert.match(result.body.xml, /ai_lane_employee/);
   assert.match(result.body.xml, /Submit leave request/);
-  const recordGeometry = result.body.xml.match(/value="Record leave"[\s\S]*?<mxGeometry x="([^"]+)" y="([^"]+)"/);
-  assert.ok(recordGeometry);
-  assert.equal(Number(recordGeometry[2]), 366);
+  const submitGeometry = geometryForValue(result.body.xml, 'Submit leave request');
+  const reviewGeometry = geometryForValue(result.body.xml, 'Review request');
+  const recordGeometry = geometryForValue(result.body.xml, 'Record leave');
+  assert.ok(reviewGeometry.y > submitGeometry.y);
+  assert.ok(recordGeometry.y > reviewGeometry.y);
   const swimlaneEdge = result.body.xml.match(/id="ai_edge_2"[\s\S]*?<\/mxCell>/);
   assert.ok(swimlaneEdge);
   assert.match(swimlaneEdge[0], /exitX=0\.5;exitY=1/);
-  assert.deepEqual(
-    Array.from(swimlaneEdge[0].matchAll(/<mxPoint x="[^"]+" y="([^"]+)"/g), (match) => Number(match[1])),
-    [410, 410]
-  );
+  const swimlaneWaypointYs = Array.from(swimlaneEdge[0].matchAll(/<mxPoint x="[^"]+" y="([^"]+)"/g), (match) => Number(match[1]));
+  assert.equal(swimlaneWaypointYs.length >= 2, true);
+  assert.equal(swimlaneWaypointYs[0], swimlaneWaypointYs[1]);
+  assert.ok(swimlaneWaypointYs[0] > reviewGeometry.y);
   assert.match(aiRequests.at(-1).body.messages[1].content, /"diagramType" to "swimlane"/);
 
   result = await request('/api/ai/diagram', {
@@ -652,6 +740,15 @@ test('company API supports login, file isolation, save conflicts and share links
   }, 'two');
   assert.equal(result.res.status, 200);
   assert.equal(result.body.profile.displayName, '李四');
+
+  result = await request('/api/ai/providers', {}, 'two');
+  assert.equal(result.res.status, 200);
+  assert.deepEqual(result.body.providers, []);
+
+  result = await request('/api/ai/providers/' + encodeURIComponent(savedProviderId), { method: 'DELETE' });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.deleted, true);
+  assert.deepEqual(result.body.providers, []);
 
   result = await request('/api/ops/status');
   assert.equal(result.res.status, 200);

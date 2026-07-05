@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>我的图纸 - 公司画图工具</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="stylesheet" href="/company.css?v=collab-search-20260704">
+  <link rel="stylesheet" href="/company.css?v=ai-progress-skills-20260705">
 </head>
 <body>
   <div class="shell">
@@ -18,7 +18,7 @@
         </div>
       </div>
       <div class="toolbar">
-        <button id="profileButton" type="button"><span class="btn-icon" aria-hidden="true">名</span><span>设置姓名</span></button>
+        <button id="profileButton" type="button"><span class="btn-icon" aria-hidden="true">人</span><span>个人信息</span></button>
         <button id="adminButton" class="hidden" type="button"><span class="btn-icon" aria-hidden="true">管</span><span>账号管理</span></button>
         <button id="aiToolbarButton" type="button"><span class="btn-icon" aria-hidden="true">AI</span><span>AI 生成</span></button>
         <button id="refreshButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>刷新</span></button>
@@ -31,10 +31,22 @@
 
     <main class="content">
       <section class="panel">
-        <div class="panel-header">
+        <div class="panel-header file-panel-header">
           <div class="file-panel-title">
             <h2 id="currentFolderTitle">工号根目录</h2>
             <p id="folderBreadcrumb"></p>
+          </div>
+          <div id="selectionToolbar" class="selection-toolbar" aria-label="图纸操作">
+            <span id="selectionCount" class="selection-count">未选择</span>
+            <button id="bulkOpenButton" type="button" disabled><span class="btn-icon" aria-hidden="true">↗</span><span>打开</span></button>
+            <button id="bulkRenameButton" type="button" disabled><span class="btn-icon" aria-hidden="true">✎</span><span>重命名</span></button>
+            <button id="bulkCopyButton" type="button" disabled><span class="btn-icon" aria-hidden="true">⎘</span><span>复制</span></button>
+            <button id="bulkCutButton" type="button" disabled><span class="btn-icon" aria-hidden="true">✂</span><span>剪切</span></button>
+            <button id="bulkShareButton" type="button" disabled><span class="btn-icon" aria-hidden="true">⛓</span><span>分享</span></button>
+            <button id="bulkInternalShareButton" type="button" disabled><span class="btn-icon" aria-hidden="true">↔</span><span>内部分享</span></button>
+            <button id="bulkDownloadButton" type="button" disabled><span class="btn-icon" aria-hidden="true">↓</span><span>下载</span></button>
+            <button id="bulkDeleteButton" class="danger" type="button" disabled><span class="btn-icon" aria-hidden="true">×</span><span>删除</span></button>
+            <button id="clearSelectionButton" class="ghost" type="button" disabled aria-label="清空选择"><span class="btn-icon" aria-hidden="true">×</span></button>
           </div>
           <div id="status" class="status"></div>
         </div>
@@ -51,6 +63,7 @@
               <table class="file-table">
                 <thead>
                   <tr>
+                    <th class="select-heading"><input id="selectAllFiles" class="select-all-checkbox" type="checkbox" aria-label="选择当前页所有图纸"></th>
                     <th>名称</th>
                     <th>类型</th>
                     <th>更新时间</th>
@@ -64,6 +77,23 @@
                 <div class="empty-mark" aria-hidden="true">▣</div>
                 <strong>当前目录为空</strong>
                 <span>新建图纸或文件夹开始整理。</span>
+              </div>
+            </div>
+            <div class="pagination-bar" id="filePagination" aria-label="文件列表分页">
+              <div id="paginationSummary" class="pagination-summary">当前目录为空</div>
+              <div class="pagination-controls">
+                <label class="page-size-control" for="pageSizeSelect">
+                  <span>每页</span>
+                  <select id="pageSizeSelect">
+                    <option value="10">10</option>
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
+                <button id="prevPageButton" type="button" aria-label="上一页"><span class="btn-icon" aria-hidden="true">‹</span></button>
+                <span id="pageIndicator" class="page-indicator">第 1 / 1 页</span>
+                <button id="nextPageButton" type="button" aria-label="下一页"><span class="btn-icon" aria-hidden="true">›</span></button>
               </div>
             </div>
           </div>
@@ -118,7 +148,12 @@
             <p>生成可编辑 draw.io 图纸，支持流程图、泳道图、UML、ER 和架构图。</p>
           </div>
         </div>
-        <button id="aiCloseButton" class="ai-icon-button" type="button" aria-label="关闭 AI 图表助手">×</button>
+        <div class="ai-panel-actions">
+          <button id="aiProviderSettingsButton" class="ai-icon-button ai-settings-button" type="button" aria-label="模型设置" title="模型设置">
+            <span aria-hidden="true">⚙</span>
+          </button>
+          <button id="aiCloseButton" class="ai-icon-button" type="button" aria-label="关闭 AI 图表助手">×</button>
+        </div>
       </header>
 
       <div class="ai-panel-body">
@@ -153,54 +188,112 @@
 
           <div class="ai-actions">
             <button id="aiGenerateButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">AI</span><span>生成并打开</span></button>
+            <div id="aiCurrentConfig" class="ai-current-config" aria-live="polite"></div>
             <div id="aiStatus" class="ai-status" role="status" aria-live="polite"></div>
           </div>
+          <div id="aiProgress" class="ai-progress hidden" aria-live="polite">
+            <div class="ai-progress-track">
+              <div id="aiProgressBar" class="ai-progress-bar"></div>
+            </div>
+            <div class="ai-progress-meta">
+              <span id="aiProgressLabel">准备生成</span>
+              <strong id="aiProgressValue">0%</strong>
+            </div>
+          </div>
         </section>
-
-        <aside class="ai-config" aria-label="模型配置">
-          <div class="ai-config-header">
-            <h3>模型配置</h3>
-            <button id="aiSaveConfigButton" type="button">保存</button>
-          </div>
-
-          <label class="ai-field compact">
-            <span>接口格式</span>
-            <select id="aiProviderFormat">
-              <option value="openai">OpenAI 格式</option>
-              <option value="anthropic">Anthropic 格式</option>
-            </select>
-          </label>
-
-          <label class="ai-field compact">
-            <span>Base URL</span>
-            <input id="aiBaseUrl" type="url" autocomplete="off">
-          </label>
-
-          <div class="ai-model-picker">
-            <label class="ai-field compact">
-              <span>模型</span>
-              <select id="aiModelSelect" disabled>
-                <option value="">填写 Base URL 和 API Key 后加载</option>
-              </select>
-            </label>
-            <button id="aiLoadModelsButton" type="button">加载模型</button>
-          </div>
-
-          <label id="aiManualModelField" class="ai-field compact hidden">
-            <span>手动模型名</span>
-            <input id="aiModel" type="text" autocomplete="off" placeholder="模型无法加载时填写">
-          </label>
-          <div id="aiModelHint" class="ai-model-hint" role="status" aria-live="polite"></div>
-
-          <label class="ai-field compact">
-            <span>API Key</span>
-            <input id="aiApiKey" type="password" autocomplete="off" placeholder="保存在当前浏览器">
-          </label>
-
-          <input id="aiTemperature" type="hidden" value="0.2">
-          <input id="aiMaxTokens" type="hidden" value="2200">
-        </aside>
       </div>
+
+      <section id="aiProviderSettings" class="ai-settings-page hidden" aria-label="模型提供商设置">
+        <div class="ai-settings-panel">
+          <header class="ai-settings-header">
+            <div>
+              <h3>模型设置</h3>
+              <p>管理当前工号保存的提供商，测试连接后选择默认模型。</p>
+            </div>
+            <button id="aiSettingsCloseButton" class="ai-icon-button" type="button" aria-label="关闭模型设置">×</button>
+          </header>
+
+          <div class="ai-settings-body">
+            <aside class="ai-provider-browser" aria-label="已保存提供商">
+              <label class="ai-field">
+                <span>默认提供商</span>
+                <select id="aiProviderSelect">
+                  <option value="">手动填写</option>
+                </select>
+              </label>
+
+              <div class="ai-provider-browser-head">
+                <strong>已保存提供商</strong>
+                <button id="aiNewProviderButton" type="button"><span class="btn-icon" aria-hidden="true">+</span><span>新增提供商</span></button>
+              </div>
+              <div id="aiProviderList" class="ai-provider-list" aria-label="已保存提供商"></div>
+            </aside>
+
+            <section class="ai-settings-form" aria-label="提供商编辑">
+              <div class="ai-settings-section-title">
+                <strong>连接配置</strong>
+                <span>保存后归当前工号使用</span>
+              </div>
+
+              <label class="ai-field">
+                <span>名称</span>
+                <input id="aiProviderName" type="text" maxlength="60" autocomplete="off" placeholder="例如：公司网关">
+              </label>
+
+              <label class="ai-field">
+                <span>接口格式</span>
+                <select id="aiProviderFormat">
+                  <option value="openai">OpenAI 格式</option>
+                  <option value="anthropic">Anthropic 格式</option>
+                </select>
+              </label>
+
+              <label class="ai-field ai-setting-wide">
+                <span>Base URL</span>
+                <input id="aiBaseUrl" type="url" autocomplete="off">
+              </label>
+
+              <label class="ai-field ai-setting-wide">
+                <span>API Key</span>
+                <input id="aiApiKey" type="password" autocomplete="off" placeholder="保存在当前工号">
+              </label>
+
+              <div class="ai-model-picker">
+                <label class="ai-field">
+                  <span>模型</span>
+                  <select id="aiModelSelect" disabled>
+                    <option value="">填写 Base URL 和 API Key 后加载</option>
+                  </select>
+                </label>
+                <button id="aiLoadModelsButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>测试并加载</span></button>
+              </div>
+
+              <label id="aiManualModelField" class="ai-field hidden">
+                <span>手动模型名</span>
+                <input id="aiModel" type="text" autocomplete="off" placeholder="模型无法加载时填写">
+              </label>
+              <div id="aiModelHint" class="ai-model-hint" role="status" aria-live="polite"></div>
+              <div id="aiProviderHint" class="ai-model-hint" role="status" aria-live="polite"></div>
+
+              <input id="aiTemperature" type="hidden" value="0.2">
+              <input id="aiMaxTokens" type="hidden" value="2200">
+
+            </section>
+          </div>
+
+          <footer class="ai-settings-footer">
+            <div class="ai-settings-footnote">默认提供商会保存到当前工号，API Key 不会写入浏览器本地配置。</div>
+            <div class="ai-settings-footer-actions">
+              <div class="ai-provider-form-actions">
+                <button id="aiSaveProviderButton" class="primary" type="button"><span class="btn-icon" aria-hidden="true">✓</span><span>保存提供商</span></button>
+                <button id="aiDeleteProviderButton" class="danger" type="button" disabled><span class="btn-icon" aria-hidden="true">×</span><span>删除</span></button>
+                <button id="aiCancelProviderEditButton" type="button">取消编辑</button>
+              </div>
+              <button id="aiSaveConfigButton" type="button"><span class="btn-icon" aria-hidden="true">✓</span><span>保存默认设置</span></button>
+            </div>
+          </footer>
+        </div>
+      </section>
     </div>
   </section>
 
@@ -235,6 +328,22 @@
       var rows = document.getElementById('fileRows');
       var emptyState = document.getElementById('emptyState');
       var status = document.getElementById('status');
+      var selectAllFilesCheckbox = document.getElementById('selectAllFiles');
+      var selectionCount = document.getElementById('selectionCount');
+      var pageSizeSelect = document.getElementById('pageSizeSelect');
+      var prevPageButton = document.getElementById('prevPageButton');
+      var nextPageButton = document.getElementById('nextPageButton');
+      var pageIndicator = document.getElementById('pageIndicator');
+      var paginationSummary = document.getElementById('paginationSummary');
+      var bulkOpenButton = document.getElementById('bulkOpenButton');
+      var bulkRenameButton = document.getElementById('bulkRenameButton');
+      var bulkCopyButton = document.getElementById('bulkCopyButton');
+      var bulkCutButton = document.getElementById('bulkCutButton');
+      var bulkShareButton = document.getElementById('bulkShareButton');
+      var bulkInternalShareButton = document.getElementById('bulkInternalShareButton');
+      var bulkDownloadButton = document.getElementById('bulkDownloadButton');
+      var bulkDeleteButton = document.getElementById('bulkDeleteButton');
+      var clearSelectionButton = document.getElementById('clearSelectionButton');
       var folderTree = document.getElementById('folderTree');
       var folderBreadcrumb = document.getElementById('folderBreadcrumb');
       var currentFolderTitle = document.getElementById('currentFolderTitle');
@@ -272,7 +381,23 @@
       var aiPrompt = document.getElementById('aiPrompt');
       var aiDiagramType = document.getElementById('aiDiagramType');
       var aiGenerateButton = document.getElementById('aiGenerateButton');
+      var aiCurrentConfig = document.getElementById('aiCurrentConfig');
       var aiStatus = document.getElementById('aiStatus');
+      var aiProgress = document.getElementById('aiProgress');
+      var aiProgressBar = document.getElementById('aiProgressBar');
+      var aiProgressLabel = document.getElementById('aiProgressLabel');
+      var aiProgressValue = document.getElementById('aiProgressValue');
+      var aiProviderSelect = document.getElementById('aiProviderSelect');
+      var aiProviderSettingsButton = document.getElementById('aiProviderSettingsButton');
+      var aiProviderSettings = document.getElementById('aiProviderSettings');
+      var aiSettingsCloseButton = document.getElementById('aiSettingsCloseButton');
+      var aiProviderList = document.getElementById('aiProviderList');
+      var aiProviderName = document.getElementById('aiProviderName');
+      var aiNewProviderButton = document.getElementById('aiNewProviderButton');
+      var aiSaveProviderButton = document.getElementById('aiSaveProviderButton');
+      var aiDeleteProviderButton = document.getElementById('aiDeleteProviderButton');
+      var aiCancelProviderEditButton = document.getElementById('aiCancelProviderEditButton');
+      var aiProviderHint = document.getElementById('aiProviderHint');
       var aiProviderFormat = document.getElementById('aiProviderFormat');
       var aiBaseUrl = document.getElementById('aiBaseUrl');
       var aiModelSelect = document.getElementById('aiModelSelect');
@@ -287,6 +412,11 @@
       var logoutButton = document.getElementById('logoutButton');
       var aiStorageKey = 'companyDrawio.aiConfig.v1';
       var aiSaveConfigTimer = null;
+      var aiProviders = [];
+      var editingAiProviderId = '';
+      var aiProvidersLoaded = false;
+      var aiProgressTimer = null;
+      var aiProgressPercent = 0;
       var currentEmployeeId = '';
       var currentProfileName = '';
       var currentDisplayName = '';
@@ -299,6 +429,14 @@
       var folders = [];
       var currentFolderId = null;
       var clipboardItem = null;
+      var selectedFileIds = new Set();
+      var folderTreeContextMenu = null;
+      var draggedFolderId = null;
+      var draggedFileIds = [];
+      var currentPage = 1;
+      var pageSize = 25;
+      var totalPageCount = 1;
+      var pageFileIds = [];
 
       function setStatus(text, tone) {
         status.textContent = text || '';
@@ -797,9 +935,66 @@
         aiStatus.className = 'ai-status' + (tone ? ' ' + tone : '');
       }
 
+      function setAiProgress(percent, label) {
+        aiProgressPercent = Math.max(0, Math.min(100, Math.round(percent || 0)));
+        aiProgressBar.style.width = aiProgressPercent + '%';
+        aiProgressValue.textContent = aiProgressPercent + '%';
+
+        if (label) {
+          aiProgressLabel.textContent = label;
+        }
+      }
+
+      function startAiProgress(label) {
+        window.clearInterval(aiProgressTimer);
+        aiProgress.classList.remove('hidden');
+        setAiProgress(8, label || '准备生成');
+        aiProgressTimer = window.setInterval(function () {
+          var ceiling = aiProgressPercent < 45 ? 68 : 88;
+
+          if (aiProgressPercent < ceiling) {
+            setAiProgress(aiProgressPercent + (aiProgressPercent < 45 ? 3 : 1));
+          }
+        }, 520);
+      }
+
+      function advanceAiProgress(percent, label) {
+        setAiProgress(Math.max(aiProgressPercent, percent), label);
+      }
+
+      function finishAiProgress(label) {
+        window.clearInterval(aiProgressTimer);
+        aiProgressTimer = null;
+        setAiProgress(100, label || '已完成');
+      }
+
+      function stopAiProgress(label, tone) {
+        window.clearInterval(aiProgressTimer);
+        aiProgressTimer = null;
+
+        if (label) {
+          aiProgressLabel.textContent = label;
+        }
+
+        aiProgress.classList.toggle('error', tone === 'error');
+      }
+
+      function resetAiProgress() {
+        window.clearInterval(aiProgressTimer);
+        aiProgressTimer = null;
+        aiProgress.classList.add('hidden');
+        aiProgress.classList.remove('error');
+        setAiProgress(0, '准备生成');
+      }
+
       function setAiModelHint(text, tone) {
         aiModelHint.textContent = text || '';
         aiModelHint.className = 'ai-model-hint' + (tone ? ' ' + tone : '');
+      }
+
+      function setAiProviderHint(text, tone) {
+        aiProviderHint.textContent = text || '';
+        aiProviderHint.className = 'ai-model-hint' + (tone ? ' ' + tone : '');
       }
 
       function setAiManualModelVisible(visible) {
@@ -819,6 +1014,8 @@
         if (!keepManualModelVisible) {
           setAiManualModelVisible(false);
         }
+
+        updateAiCurrentConfig();
       }
 
       function populateAiModels(models, selectedModel) {
@@ -852,6 +1049,7 @@
         }
 
         setAiManualModelVisible(false);
+        updateAiCurrentConfig();
       }
 
       function markAiModelsStale() {
@@ -862,6 +1060,7 @@
 
       function collectAiConfig() {
         return {
+          providerId: aiProviderSelect.value || '',
           providerFormat: aiProviderFormat.value,
           baseUrl: aiBaseUrl.value.trim(),
           model: (aiModel.value || aiModelSelect.value).trim(),
@@ -872,8 +1071,304 @@
         };
       }
 
+      function collectAiLocalConfig() {
+        var config = collectAiConfig();
+        delete config.apiKey;
+        return config;
+      }
+
+      function aiProviderById(providerId) {
+        return aiProviders.find(function (provider) {
+          return provider.id === providerId;
+        }) || null;
+      }
+
+      function aiProviderLabel(provider) {
+        if (!provider) {
+          return '手动填写';
+        }
+
+        return provider.name || provider.model || (provider.providerFormat === 'anthropic' ? 'Anthropic' : 'OpenAI');
+      }
+
+      function updateAiCurrentConfig() {
+        if (!aiCurrentConfig) {
+          return;
+        }
+
+        var provider = aiProviderById(aiProviderSelect.value);
+        var providerText = provider ? aiProviderLabel(provider) : '手动配置';
+        var modelText = (aiModel.value || aiModelSelect.value || '').trim() || '未选择模型';
+
+        aiCurrentConfig.innerHTML = [
+          '<span>当前模型</span>',
+          '<strong>' + escapeHtml(providerText) + '</strong>',
+          '<small>' + escapeHtml(modelText) + '</small>'
+        ].join('');
+      }
+
+      function updateAiProvidersFromBody(body, preferredProviderId) {
+        aiProviders = Array.isArray(body && body.providers) ? body.providers : [];
+        renderAiProviderSelect(preferredProviderId || (body && body.selectedProviderId) || aiProviderSelect.value);
+        renderAiProviderList();
+        updateAiCurrentConfig();
+      }
+
+      function renderAiProviderSelect(preferredProviderId) {
+        var selectedId = preferredProviderId || '';
+        var selectedProvider = selectedId ? aiProviderById(selectedId) : null;
+        aiProviderSelect.innerHTML = '';
+
+        var manualOption = document.createElement('option');
+        manualOption.value = '';
+        manualOption.textContent = '手动填写';
+        aiProviderSelect.appendChild(manualOption);
+
+        aiProviders.forEach(function (provider) {
+          var option = document.createElement('option');
+          option.value = provider.id;
+          option.textContent = aiProviderLabel(provider);
+          aiProviderSelect.appendChild(option);
+        });
+
+        aiProviderSelect.value = selectedProvider ? selectedProvider.id : '';
+        updateAiCurrentConfig();
+      }
+
+      function renderAiProviderList() {
+        aiProviderList.innerHTML = '';
+
+        if (!aiProviders.length) {
+          var empty = document.createElement('div');
+          empty.className = 'ai-provider-empty';
+          empty.textContent = '还没有保存的提供商';
+          aiProviderList.appendChild(empty);
+          return;
+        }
+
+        aiProviders.forEach(function (provider) {
+          var item = document.createElement('div');
+          item.className = 'ai-provider-item' + (provider.id === aiProviderSelect.value ? ' is-selected' : '');
+          item.setAttribute('data-provider-id', provider.id);
+          item.innerHTML = [
+            '<button class="ai-provider-main" type="button" data-provider-select="' + escapeHtml(provider.id) + '">',
+            '<strong>' + escapeHtml(aiProviderLabel(provider)) + '</strong>',
+            '<span>' + escapeHtml(provider.model || provider.baseUrl || '未填写模型') + '</span>',
+            '</button>',
+            '<button type="button" data-provider-edit="' + escapeHtml(provider.id) + '">编辑</button>'
+          ].join('');
+          aiProviderList.appendChild(item);
+        });
+      }
+
+      function applyAiProvider(provider) {
+        if (!provider) {
+          aiProviderSelect.value = '';
+          aiApiKey.placeholder = '可在设置里添加到工号';
+          persistAiConfig();
+          renderAiProviderList();
+          updateAiCurrentConfig();
+          return;
+        }
+
+        aiProviderSelect.value = provider.id;
+        aiProviderFormat.value = provider.providerFormat === 'anthropic' ? 'anthropic' : 'openai';
+        lastAiProviderFormat = aiProviderFormat.value;
+        aiBaseUrl.value = provider.baseUrl || providerDefaultBaseUrl(aiProviderFormat.value);
+        aiModel.value = provider.model || '';
+        resetAiModelOptions('加载模型后选择', provider.model || '');
+        setAiManualModelVisible(false);
+        setAiModelHint(provider.model ? '已选择 ' + provider.model : '可加载模型列表后选择');
+        aiApiKey.value = '';
+        aiApiKey.placeholder = provider.hasApiKey ? '已保存在工号中，留空使用已保存 Key' : '尚未保存 API Key';
+        aiTemperature.value = provider.temperature || '0.2';
+        aiMaxTokens.value = provider.maxTokens || '2200';
+        persistAiConfig();
+        renderAiProviderList();
+        updateAiCurrentConfig();
+      }
+
+      function resetAiProviderEdit() {
+        editingAiProviderId = '';
+        aiProviderName.value = '';
+        aiDeleteProviderButton.disabled = true;
+        setAiProviderHint('', '');
+      }
+
+      function editAiProvider(provider) {
+        if (!provider) {
+          return;
+        }
+
+        editingAiProviderId = provider.id;
+        aiProviderName.value = provider.name || '';
+        aiDeleteProviderButton.disabled = false;
+        aiProviderSettings.classList.remove('hidden');
+        applyAiProvider(provider);
+        setAiProviderHint('正在编辑 ' + aiProviderLabel(provider));
+        aiProviderName.focus();
+      }
+
+      function startNewAiProvider() {
+        editingAiProviderId = '';
+        aiProviderSelect.value = '';
+        aiProviderName.value = '';
+        aiProviderFormat.value = 'openai';
+        lastAiProviderFormat = aiProviderFormat.value;
+        aiBaseUrl.value = providerDefaultBaseUrl('openai');
+        aiModel.value = '';
+        resetAiModelOptions('填写 Base URL 和 API Key 后加载', '');
+        setAiManualModelVisible(false);
+        aiApiKey.value = '';
+        aiApiKey.placeholder = '保存后归当前工号使用';
+        aiTemperature.value = '0.2';
+        aiMaxTokens.value = '2200';
+        aiDeleteProviderButton.disabled = true;
+        setAiProviderHint('填写配置后保存为提供商');
+        renderAiProviderList();
+        aiProviderName.focus();
+      }
+
+      function currentAiProviderPayload() {
+        return {
+          name: aiProviderName.value.trim(),
+          providerFormat: aiProviderFormat.value,
+          baseUrl: aiBaseUrl.value.trim(),
+          model: (aiModel.value || aiModelSelect.value).trim(),
+          apiKey: aiApiKey.value.trim(),
+          temperature: aiTemperature.value,
+          maxTokens: aiMaxTokens.value
+        };
+      }
+
+      function saveAiProvider() {
+        var payload = currentAiProviderPayload();
+
+        if (!payload.baseUrl) {
+          setAiProviderHint('请先填写 Base URL', 'error');
+          aiBaseUrl.focus();
+          return;
+        }
+
+        aiSaveProviderButton.disabled = true;
+        setAiProviderHint(editingAiProviderId ? '正在更新提供商' : '正在保存提供商');
+
+        api(editingAiProviderId ? '/api/ai/providers/' + encodeURIComponent(editingAiProviderId) : '/api/ai/providers', {
+          method: editingAiProviderId ? 'PUT' : 'POST',
+          body: JSON.stringify(payload)
+        })
+          .then(function (body) {
+            var provider = body.provider || null;
+            updateAiProvidersFromBody(body, provider && provider.id);
+
+            if (provider) {
+              editingAiProviderId = provider.id;
+              aiProviderName.value = provider.name || '';
+              aiDeleteProviderButton.disabled = false;
+              applyAiProvider(provider);
+            }
+
+            setAiProviderHint('提供商已保存到当前工号', 'ok');
+            setAiStatus('提供商已保存', 'ok');
+            notify('AI 提供商已保存。', 'ok');
+          })
+          .catch(function (err) {
+            var message = aiErrorText(err);
+            setAiProviderHint(message, 'error');
+            notify(message, 'error');
+          })
+          .finally(function () {
+            aiSaveProviderButton.disabled = false;
+          });
+      }
+
+      function deleteAiProvider() {
+        var provider = aiProviderById(editingAiProviderId || aiProviderSelect.value);
+
+        if (!provider) {
+          return;
+        }
+
+        CompanyDialog.confirm({
+          title: '删除提供商',
+          message: '确定删除“' + aiProviderLabel(provider) + '”？',
+          confirmText: '删除',
+          cancelText: '保留',
+          danger: true
+        }).then(function (confirmed) {
+          if (!confirmed) {
+            return;
+          }
+
+          aiDeleteProviderButton.disabled = true;
+          api('/api/ai/providers/' + encodeURIComponent(provider.id), { method: 'DELETE' })
+            .then(function (body) {
+              updateAiProvidersFromBody(body, body.selectedProviderId);
+              resetAiProviderEdit();
+
+              if (body.selectedProviderId) {
+                applyAiProvider(aiProviderById(body.selectedProviderId));
+              } else {
+                startNewAiProvider();
+              }
+
+              setAiProviderHint('提供商已删除', 'ok');
+              notify('AI 提供商已删除。', 'ok');
+            })
+            .catch(function (err) {
+              aiDeleteProviderButton.disabled = false;
+              var message = aiErrorText(err);
+              setAiProviderHint(message, 'error');
+              notify(message, 'error');
+            });
+        });
+      }
+
+      function saveAiProviderSelection(providerId) {
+        if (!aiProvidersLoaded) {
+          persistAiConfig();
+          return Promise.resolve();
+        }
+
+        return api('/api/ai/providers/selection', {
+          method: 'PUT',
+          body: JSON.stringify({ providerId: providerId || '' })
+        }).then(function (body) {
+          updateAiProvidersFromBody(body, providerId || '');
+          persistAiConfig();
+        });
+      }
+
+      function loadAiProviders() {
+        return api('/api/ai/providers')
+          .then(function (body) {
+            aiProvidersLoaded = true;
+            var localConfig = {};
+
+            try {
+              localConfig = JSON.parse(localStorage.getItem(aiStorageKey) || '{}');
+            } catch (_err) {
+              localConfig = {};
+            }
+
+            updateAiProvidersFromBody(body, body.selectedProviderId || localConfig.providerId || '');
+
+            if (aiProviderSelect.value) {
+              applyAiProvider(aiProviderById(aiProviderSelect.value));
+            } else {
+              renderAiProviderList();
+            }
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              setAiProviderHint('提供商列表加载失败', 'error');
+            }
+          });
+      }
+
       function loadAiConfig() {
         var config = {
+          providerId: '',
           providerFormat: 'openai',
           baseUrl: providerDefaultBaseUrl('openai'),
           model: '',
@@ -899,11 +1394,12 @@
         aiApiKey.value = config.apiKey || '';
         aiTemperature.value = config.temperature || '0.2';
         aiMaxTokens.value = config.maxTokens || '2200';
+        updateAiCurrentConfig();
       }
 
       function persistAiConfig() {
         try {
-          localStorage.setItem(aiStorageKey, JSON.stringify(collectAiConfig()));
+          localStorage.setItem(aiStorageKey, JSON.stringify(collectAiLocalConfig()));
           return true;
         } catch (_err) {
           return false;
@@ -924,13 +1420,32 @@
           return;
         }
 
-        setAiStatus('配置已保存', 'ok');
-        notify('AI 配置已保存到当前浏览器。', 'ok');
+        aiSaveConfigButton.disabled = true;
+        saveAiProviderSelection(aiProviderSelect.value)
+          .then(function () {
+            if (aiProviderSelect.value) {
+              setAiStatus('默认提供商已保存到当前工号', 'ok');
+              notify('默认 AI 提供商已保存。', 'ok');
+            } else {
+              setAiStatus('手动配置已保存', 'ok');
+              notify('手动 AI 配置已保存。', 'ok');
+            }
+          })
+          .catch(function (err) {
+            var message = aiErrorText(err);
+            setAiStatus(message, 'error');
+            notify(message, 'error');
+          })
+          .finally(function () {
+            aiSaveConfigButton.disabled = false;
+          });
       }
 
       function loadAiModels() {
         var baseUrl = aiBaseUrl.value.trim();
         var apiKey = aiApiKey.value.trim();
+        var selectedProvider = aiProviderById(aiProviderSelect.value);
+        var hasSavedApiKey = selectedProvider && selectedProvider.hasApiKey;
 
         if (!baseUrl) {
           setAiModelHint('请先填写 Base URL', 'error');
@@ -939,7 +1454,7 @@
           return;
         }
 
-        if (!apiKey) {
+        if (!apiKey && !hasSavedApiKey) {
           setAiModelHint('请先填写 API Key', 'error');
           setAiStatus('请先填写 API Key', 'error');
           aiApiKey.focus();
@@ -988,7 +1503,27 @@
       }
 
       function closeAiPanel() {
+        closeAiSettings();
+        resetAiProgress();
         aiAssistant.classList.add('hidden');
+      }
+
+      function openAiSettings() {
+        aiProviderSettings.classList.remove('hidden');
+        renderAiProviderList();
+        updateAiCurrentConfig();
+
+        window.setTimeout(function () {
+          if (aiProviderSelect.value) {
+            aiProviderSelect.focus();
+          } else {
+            aiProviderName.focus();
+          }
+        }, 0);
+      }
+
+      function closeAiSettings() {
+        aiProviderSettings.classList.add('hidden');
       }
 
       function aiErrorText(err) {
@@ -1007,6 +1542,12 @@
           ai_provider_error: safeMessage || '模型接口返回错误，请检查 Base URL、API Key 和模型名。',
           ai_provider_non_json: '模型接口返回了网页而不是 JSON，请检查 Base URL 是否是 API 地址。',
           ai_models_empty: '没有从接口加载到可用模型，可手动填写模型名。',
+          ai_diagram_too_small: '模型返回的图表内容太少，请补充更多实体、步骤或组件后重试。',
+          ai_flowchart_too_small: '模型返回的流程节点太少，请补充更多步骤后重试。',
+          ai_provider_not_found: '这个提供商不存在或已删除。',
+          invalid_ai_provider_id: '提供商标识不正确。',
+          too_many_ai_providers: '保存的提供商太多，请先删除不用的提供商。',
+          ai_api_key_too_large: 'API Key 太长，请检查后重新填写。',
           ai_response_not_json: '模型返回内容不是可解析的图表结构。',
           ai_invalid_response: '模型返回内容不完整。'
         };
@@ -1060,8 +1601,11 @@
         }
 
         aiGenerateButton.disabled = true;
+        aiProgress.classList.remove('error');
         persistAiConfig();
         setAiStatus('正在生成图表结构');
+        startAiProgress('校验提示词和模型配置');
+        advanceAiProgress(18, '正在请求模型生成结构');
 
         api('/api/ai/diagram', {
           method: 'POST',
@@ -1072,6 +1616,7 @@
           })
         })
           .then(function (body) {
+            advanceAiProgress(76, '已收到结构，正在创建图纸');
             setAiStatus('正在创建图纸');
             return api('/api/files', {
               method: 'POST',
@@ -1083,6 +1628,7 @@
             });
           })
           .then(function (body) {
+            finishAiProgress('生成完成，正在打开编辑器');
             setAiStatus('已生成，正在打开', 'ok');
             notify('AI 图表已生成。', 'ok');
             window.location.href = '/editor.html?id=' + encodeURIComponent(body.file.id);
@@ -1090,6 +1636,7 @@
           .catch(function (err) {
             if (!err || err.error !== 'not_authenticated') {
               var message = aiErrorText(err);
+              stopAiProgress(message, 'error');
               setAiStatus(message, 'error');
               notify(message, 'error');
             }
@@ -1145,6 +1692,35 @@
           });
       }
 
+      function selectedFiles() {
+        return files.filter(function (file) {
+          return selectedFileIds.has(file.id);
+        });
+      }
+
+      function currentSelectedFiles() {
+        var visibleFileIds = new Set(childFiles(currentFolderId).map(function (file) {
+          return file.id;
+        }));
+
+        return selectedFiles().filter(function (file) {
+          return visibleFileIds.has(file.id);
+        });
+      }
+
+      function clearSelectedFiles() {
+        selectedFileIds.clear();
+        updateSelectionState();
+      }
+
+      function runSequential(items, iterator) {
+        return items.reduce(function (chain, item) {
+          return chain.then(function () {
+            return iterator(item);
+          });
+        }, Promise.resolve());
+      }
+
       function isDescendantFolder(folderId, possibleAncestorId) {
         var cursor = folderById(folderId);
         var guard = 0;
@@ -1162,8 +1738,59 @@
       }
 
       function setCurrentFolder(folderId) {
+        selectedFileIds.clear();
         currentFolderId = folderId || null;
+        currentPage = 1;
         renderLibrary();
+      }
+
+      function updateSelectionState() {
+        var filesHere = childFiles(currentFolderId);
+        var pageFileIdSet = new Set(pageFileIds);
+        var filesOnPage = filesHere.filter(function (file) {
+          return pageFileIdSet.has(file.id);
+        });
+        var selectedHere = currentSelectedFiles();
+        var selectedOnPageCount = filesOnPage.filter(function (file) {
+          return selectedFileIds.has(file.id);
+        }).length;
+        var selectedCountValue = selectedHere.length;
+        var singleSelected = selectedCountValue === 1;
+        var hasSelection = selectedCountValue > 0;
+
+        if (selectionCount) {
+          selectionCount.textContent = hasSelection ? '已选 ' + selectedCountValue + ' 个图纸' : '未选择';
+        }
+
+        if (selectAllFilesCheckbox) {
+          selectAllFilesCheckbox.disabled = filesOnPage.length === 0;
+          selectAllFilesCheckbox.checked = filesOnPage.length > 0 && selectedOnPageCount === filesOnPage.length;
+          selectAllFilesCheckbox.indeterminate = selectedOnPageCount > 0 && selectedOnPageCount < filesOnPage.length;
+        }
+
+        [bulkOpenButton, bulkCopyButton, bulkCutButton, bulkDownloadButton, bulkDeleteButton, clearSelectionButton].forEach(function (button) {
+          if (button) {
+            button.disabled = !hasSelection;
+          }
+        });
+
+        [bulkRenameButton, bulkShareButton, bulkInternalShareButton].forEach(function (button) {
+          if (button) {
+            button.disabled = !singleSelected;
+            button.title = hasSelection && !singleSelected ? '该操作仅支持单张图纸' : '';
+          }
+        });
+
+        Array.prototype.forEach.call(document.querySelectorAll('[data-file-row]'), function (row) {
+          var fileId = row.getAttribute('data-file-row');
+          var selected = selectedFileIds.has(fileId);
+          row.classList.toggle('is-selected', selected);
+
+          var checkbox = row.querySelector('.row-select');
+          if (checkbox) {
+            checkbox.checked = selected;
+          }
+        });
       }
 
       function updateClipboardState() {
@@ -1184,6 +1811,28 @@
         notify((action === 'cut' ? '已剪切 ' : '已复制 ') + item.name + '。', 'ok');
       }
 
+      function setClipboardFiles(action, selected) {
+        if (!selected.length) {
+          return;
+        }
+
+        if (selected.length === 1) {
+          setClipboard('file', action, selected[0]);
+          return;
+        }
+
+        clipboardItem = {
+          kind: 'files',
+          action: action,
+          ids: selected.map(function (file) {
+            return file.id;
+          }),
+          name: selected.length + ' 个图纸'
+        };
+        updateClipboardState();
+        notify((action === 'cut' ? '已剪切 ' : '已复制 ') + selected.length + ' 个图纸。', 'ok');
+      }
+
       function operationErrorText(err) {
         var code = err && err.error;
         var messages = {
@@ -1200,8 +1849,198 @@
         var button = document.createElement('button');
         button.type = 'button';
         button.className = className || '';
+        button.title = text;
+        button.setAttribute('aria-label', text);
         button.innerHTML = '<span class="btn-icon" aria-hidden="true">' + escapeHtml(icon) + '</span><span>' + escapeHtml(text) + '</span>';
         return button;
+      }
+
+      function folderMenuButton(action, text, disabled) {
+        return '<button type="button" role="menuitem" data-folder-menu-action="' + action + '"' + (disabled ? ' disabled' : '') + '>' +
+          escapeHtml(text) +
+          '</button>';
+      }
+
+      function getFolderTreeContextMenu() {
+        if (folderTreeContextMenu) {
+          return folderTreeContextMenu;
+        }
+
+        folderTreeContextMenu = document.createElement('div');
+        folderTreeContextMenu.className = 'folder-context-menu hidden';
+        folderTreeContextMenu.setAttribute('role', 'menu');
+        document.body.appendChild(folderTreeContextMenu);
+
+        folderTreeContextMenu.addEventListener('mousedown', function (evt) {
+          evt.stopPropagation();
+        });
+        folderTreeContextMenu.addEventListener('click', function (evt) {
+          var button = evt.target.closest('[data-folder-menu-action]');
+
+          if (!button || button.disabled) {
+            return;
+          }
+
+          var folderId = folderTreeContextMenu.getAttribute('data-folder-id') || '';
+          var targetFolderId = folderId || null;
+          var action = button.getAttribute('data-folder-menu-action');
+          hideFolderTreeContextMenu();
+
+          if (action === 'create') {
+            createFolderIn(targetFolderId);
+            return;
+          }
+
+          if (action === 'delete') {
+            var folder = folderById(targetFolderId);
+
+            if (folder) {
+              deleteFolder(folder);
+            }
+          }
+        });
+
+        return folderTreeContextMenu;
+      }
+
+      function hideFolderTreeContextMenu() {
+        if (folderTreeContextMenu) {
+          folderTreeContextMenu.classList.add('hidden');
+        }
+      }
+
+      function showFolderTreeContextMenu(evt, folder) {
+        var menu = getFolderTreeContextMenu();
+        var folderId = folder ? folder.id : '';
+
+        evt.preventDefault();
+        evt.stopPropagation();
+        menu.setAttribute('data-folder-id', folderId);
+        menu.innerHTML = [
+          folderMenuButton('create', '新建文件夹', false),
+          folderMenuButton('delete', '删除文件夹', !folder)
+        ].join('');
+        menu.style.left = '0px';
+        menu.style.top = '0px';
+        menu.classList.remove('hidden');
+
+        var left = evt.clientX;
+        var top = evt.clientY;
+        var menuWidth = menu.offsetWidth;
+        var menuHeight = menu.offsetHeight;
+        var maxLeft = Math.max(8, window.innerWidth - menuWidth - 8);
+        var maxTop = Math.max(8, window.innerHeight - menuHeight - 8);
+
+        menu.style.left = Math.min(Math.max(8, left), maxLeft) + 'px';
+        menu.style.top = Math.min(Math.max(8, top), maxTop) + 'px';
+      }
+
+      function clearFolderDropTargets() {
+        Array.prototype.forEach.call(document.querySelectorAll('.folder-tree-item.drop-target'), function (row) {
+          row.classList.remove('drop-target');
+        });
+      }
+
+      function canMoveFolderTo(folderId, targetParentId) {
+        var folder = folderById(folderId);
+
+        if (!folder || folder.id === targetParentId) {
+          return false;
+        }
+
+        if ((folder.parentId || null) === (targetParentId || null)) {
+          return false;
+        }
+
+        return !targetParentId || !isDescendantFolder(targetParentId, folder.id);
+      }
+
+      function moveFolderTo(folderId, targetParentId) {
+        var folder = folderById(folderId);
+
+        if (!folder) {
+          notify('文件夹不存在。', 'error');
+          return;
+        }
+
+        if (!canMoveFolderTo(folderId, targetParentId)) {
+          notify('不能把文件夹移动到该位置。', 'error');
+          return;
+        }
+
+        api('/api/folders/' + encodeURIComponent(folderId) + '/move', {
+          method: 'POST',
+          body: JSON.stringify({ parentId: targetParentId || null })
+        })
+          .then(function () {
+            notify('文件夹已移动。', 'ok');
+            return loadFiles();
+          })
+          .catch(function (err) {
+            notify(operationErrorText(err), 'error');
+          });
+      }
+
+      function canMoveFilesTo(fileIds, targetFolderId) {
+        var ids = Array.isArray(fileIds) ? fileIds : [];
+
+        if (!ids.length) {
+          return false;
+        }
+
+        return ids.some(function (fileId) {
+          var file = files.find(function (item) {
+            return item.id === fileId;
+          });
+
+          return file && (file.folderId || null) !== (targetFolderId || null);
+        });
+      }
+
+      function moveFilesTo(fileIds, targetFolderId) {
+        var ids = (Array.isArray(fileIds) ? fileIds : []).filter(function (fileId, index, list) {
+          return fileId && list.indexOf(fileId) === index;
+        });
+
+        if (!canMoveFilesTo(ids, targetFolderId)) {
+          notify('图纸已经在该目录中。', 'warn');
+          return;
+        }
+
+        runSequential(ids, function (fileId) {
+          return api('/api/files/' + encodeURIComponent(fileId) + '/move', {
+            method: 'POST',
+            body: JSON.stringify({ folderId: targetFolderId || null })
+          });
+        })
+          .then(function () {
+            ids.forEach(function (fileId) {
+              selectedFileIds.delete(fileId);
+            });
+            notify(ids.length === 1 ? '图纸已移动。' : '已移动 ' + ids.length + ' 个图纸。', 'ok');
+            return loadFiles();
+          })
+          .catch(function (err) {
+            notify(operationErrorText(err), 'error');
+          });
+      }
+
+      function draggedFilesFromEvent(evt) {
+        if (evt.dataTransfer) {
+          var raw = evt.dataTransfer.getData('application/x-company-files');
+
+          if (raw) {
+            try {
+              var parsed = JSON.parse(raw);
+
+              if (Array.isArray(parsed)) {
+                return parsed;
+              }
+            } catch (ignore) {}
+          }
+        }
+
+        return draggedFileIds;
       }
 
       function renderFolderTree() {
@@ -1211,14 +2050,84 @@
           var row = document.createElement('button');
           var folderId = folder ? folder.id : null;
           row.type = 'button';
-          row.className = 'folder-tree-item' + ((currentFolderId || null) === (folderId || null) ? ' active' : '');
+          row.className = 'folder-tree-item' +
+            (folder ? ' can-drag' : ' is-root') +
+            ((currentFolderId || null) === (folderId || null) ? ' active' : '');
+          row.draggable = Boolean(folder);
+          row.setAttribute('data-folder-id', folderId || '');
           row.style.setProperty('--level', level);
           row.innerHTML = [
             '<span class="folder-glyph" aria-hidden="true">▣</span>',
             '<span class="folder-tree-name">' + escapeHtml(folder ? folder.name : '工号 ' + currentEmployeeId) + '</span>'
           ].join('');
           row.addEventListener('click', function () {
+            hideFolderTreeContextMenu();
             setCurrentFolder(folderId);
+          });
+          row.addEventListener('contextmenu', function (evt) {
+            showFolderTreeContextMenu(evt, folder);
+          });
+
+          if (folder) {
+            row.addEventListener('dragstart', function (evt) {
+              hideFolderTreeContextMenu();
+              draggedFolderId = folder.id;
+              draggedFileIds = [];
+              row.classList.add('dragging');
+
+              if (evt.dataTransfer) {
+                evt.dataTransfer.effectAllowed = 'move';
+                evt.dataTransfer.setData('application/x-company-folder', folder.id);
+                evt.dataTransfer.setData('text/plain', folder.id);
+              }
+            });
+          }
+
+          row.addEventListener('dragover', function (evt) {
+            var canDropFolder = draggedFolderId && canMoveFolderTo(draggedFolderId, folderId);
+            var canDropFiles = draggedFileIds.length > 0 && canMoveFilesTo(draggedFileIds, folderId);
+
+            if (canDropFolder || canDropFiles) {
+              evt.preventDefault();
+              clearFolderDropTargets();
+              row.classList.add('drop-target');
+
+              if (evt.dataTransfer) {
+                evt.dataTransfer.dropEffect = 'move';
+              }
+            }
+          });
+          row.addEventListener('dragleave', function (evt) {
+            if (!evt.relatedTarget || !row.contains(evt.relatedTarget)) {
+              row.classList.remove('drop-target');
+            }
+          });
+          row.addEventListener('drop', function (evt) {
+            var sourceFileIds = draggedFilesFromEvent(evt);
+            var sourceFolderId = evt.dataTransfer && evt.dataTransfer.getData('application/x-company-folder') || draggedFolderId;
+
+            clearFolderDropTargets();
+            row.classList.remove('drop-target');
+
+            if (sourceFileIds.length) {
+              evt.preventDefault();
+              moveFilesTo(sourceFileIds, folderId);
+              draggedFileIds = [];
+              return;
+            }
+
+            if (!sourceFolderId) {
+              return;
+            }
+
+            evt.preventDefault();
+            moveFolderTo(sourceFolderId, folderId);
+          });
+          row.addEventListener('dragend', function () {
+            draggedFolderId = null;
+            draggedFileIds = [];
+            row.classList.remove('dragging');
+            clearFolderDropTargets();
           });
           folderTree.appendChild(row);
 
@@ -1243,8 +2152,10 @@
         [openButton, renameButton, copyButton, cutButton, deleteButton].forEach(function (button) {
           actions.appendChild(button);
         });
+        tr.className = 'folder-row';
 
         tr.innerHTML = [
+          '<td class="select-cell select-cell-empty"></td>',
           '<td class="name-cell" title="' + escapeHtml(folder.name) + '"><span class="name-content"><span class="item-kind" aria-hidden="true">▣</span><strong class="name-text">' + escapeHtml(folder.name) + '</strong></span></td>',
           '<td>文件夹</td>',
           '<td>' + escapeHtml(formatDate(folder.updatedAt)) + '</td>',
@@ -1275,20 +2186,18 @@
         var tr = document.createElement('tr');
         var actions = document.createElement('div');
         var openButton = actionButton('↗', '打开');
-        var renameButton = actionButton('✎', '重命名');
-        var copyButton = actionButton('⎘', '复制');
-        var cutButton = actionButton('✂', '剪切');
-        var shareButton = actionButton('⛓', '分享');
-        var internalShareButton = actionButton('↔', '内部分享');
-        var downloadButton = actionButton('↓', '下载');
-        var deleteButton = actionButton('×', '删除', 'danger');
 
         actions.className = 'row-actions';
-        [openButton, renameButton, copyButton, cutButton, shareButton, internalShareButton, downloadButton, deleteButton].forEach(function (button) {
+        [openButton].forEach(function (button) {
           actions.appendChild(button);
         });
+        tr.className = 'file-row';
+        tr.draggable = true;
+        tr.setAttribute('data-file-row', file.id);
+        tr.setAttribute('title', '拖到左侧目录可移动图纸');
 
         tr.innerHTML = [
+          '<td class="select-cell"><input class="row-select" type="checkbox" aria-label="选择图纸 ' + escapeHtml(file.name) + '"></td>',
           '<td class="name-cell" title="' + escapeHtml(file.name) + '"><span class="name-content"><span class="item-kind" aria-hidden="true">◇</span><strong class="name-text">' + escapeHtml(file.name) + '</strong></span></td>',
           '<td>图纸</td>',
           '<td>' + escapeHtml(formatDate(file.updatedAt)) + '</td>',
@@ -1296,32 +2205,78 @@
           '<td></td>'
         ].join('');
         tr.querySelector('td:last-child').appendChild(actions);
+        tr.classList.toggle('is-selected', selectedFileIds.has(file.id));
+        tr.querySelector('.row-select').checked = selectedFileIds.has(file.id);
+        tr.querySelector('.row-select').addEventListener('change', function (evt) {
+          if (evt.target.checked) {
+            selectedFileIds.add(file.id);
+          } else {
+            selectedFileIds.delete(file.id);
+          }
+
+          updateSelectionState();
+        });
         openButton.addEventListener('click', function () {
           window.location.href = '/editor.html?id=' + encodeURIComponent(file.id);
         });
-        renameButton.addEventListener('click', function () {
-          renameFile(file);
+        tr.addEventListener('dragstart', function (evt) {
+          if (evt.target.closest('button, input')) {
+            evt.preventDefault();
+            return;
+          }
+
+          draggedFolderId = null;
+          draggedFileIds = selectedFileIds.has(file.id) ?
+            currentSelectedFiles().map(function (selectedFile) {
+              return selectedFile.id;
+            }) :
+            [file.id];
+          tr.classList.add('dragging');
+
+          if (evt.dataTransfer) {
+            evt.dataTransfer.effectAllowed = 'move';
+            evt.dataTransfer.setData('application/x-company-files', JSON.stringify(draggedFileIds));
+            evt.dataTransfer.setData('text/plain', draggedFileIds.join('\n'));
+          }
         });
-        copyButton.addEventListener('click', function () {
-          setClipboard('file', 'copy', file);
-        });
-        cutButton.addEventListener('click', function () {
-          setClipboard('file', 'cut', file);
-        });
-        shareButton.addEventListener('click', function () {
-          shareFile(file);
-        });
-        internalShareButton.addEventListener('click', function () {
-          shareFileInternal(file);
-        });
-        downloadButton.addEventListener('click', function () {
-          downloadFile(file);
-        });
-        deleteButton.addEventListener('click', function () {
-          deleteFile(file);
+        tr.addEventListener('dragend', function () {
+          draggedFileIds = [];
+          tr.classList.remove('dragging');
+          clearFolderDropTargets();
         });
 
         rows.appendChild(tr);
+      }
+
+      function directoryItems(foldersHere, filesHere) {
+        return foldersHere.map(function (folder) {
+          return { kind: 'folder', item: folder };
+        }).concat(filesHere.map(function (file) {
+          return { kind: 'file', item: file };
+        }));
+      }
+
+      function clampCurrentPage(totalItems) {
+        totalPageCount = Math.max(1, Math.ceil(totalItems / pageSize));
+        currentPage = Math.min(Math.max(1, currentPage), totalPageCount);
+      }
+
+      function renderPagination(totalItems, folderCount, fileCount) {
+        var start = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+        var end = Math.min(totalItems, currentPage * pageSize);
+
+        paginationSummary.textContent = totalItems === 0 ?
+          '当前目录为空' :
+          '当前目录 ' + totalItems + ' 项（' + folderCount + ' 个文件夹 · ' + fileCount + ' 个图纸），显示 ' + start + '-' + end;
+        pageIndicator.textContent = '第 ' + currentPage + ' / ' + totalPageCount + ' 页';
+        prevPageButton.disabled = currentPage <= 1;
+        nextPageButton.disabled = currentPage >= totalPageCount;
+        pageSizeSelect.value = String(pageSize);
+      }
+
+      function goToPage(page) {
+        currentPage = Math.min(Math.max(1, page), totalPageCount);
+        renderLibrary();
       }
 
       function renderLibrary() {
@@ -1333,16 +2288,46 @@
 
         var foldersHere = childFolders(currentFolderId);
         var filesHere = childFiles(currentFolderId);
+        var itemsHere = directoryItems(foldersHere, filesHere);
+        var totalItems = itemsHere.length;
+        var pageItems;
+        var visibleFileIds = new Set(filesHere.map(function (file) {
+          return file.id;
+        }));
+
+        clampCurrentPage(totalItems);
+        pageItems = itemsHere.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+        pageFileIds = pageItems
+          .filter(function (entry) {
+            return entry.kind === 'file';
+          })
+          .map(function (entry) {
+            return entry.item.id;
+          });
+
+        selectedFileIds.forEach(function (fileId) {
+          if (!visibleFileIds.has(fileId)) {
+            selectedFileIds.delete(fileId);
+          }
+        });
+
         rows.innerHTML = '';
         renderFolderTree();
         currentFolderTitle.textContent = folderName(currentFolderId);
         folderBreadcrumb.textContent = folderPath(currentFolderId).join(' / ');
-        emptyState.classList.toggle('hidden', foldersHere.length + filesHere.length > 0);
+        emptyState.classList.toggle('hidden', totalItems > 0);
 
-        foldersHere.forEach(renderFolderRow);
-        filesHere.forEach(renderFileRow);
+        pageItems.forEach(function (entry) {
+          if (entry.kind === 'folder') {
+            renderFolderRow(entry.item);
+          } else {
+            renderFileRow(entry.item);
+          }
+        });
+        renderPagination(totalItems, foldersHere.length, filesHere.length);
         setStatus(folders.length + ' 个文件夹 · ' + files.length + ' 个图纸', 'ok');
         updateClipboardState();
+        updateSelectionState();
       }
 
       function loadFiles() {
@@ -1400,7 +2385,7 @@
           });
       }
 
-      function createFolder() {
+      function createFolderIn(parentId) {
         CompanyDialog.prompt({
           title: '新建文件夹',
           label: '文件夹名',
@@ -1416,7 +2401,7 @@
 
           api('/api/folders', {
             method: 'POST',
-            body: JSON.stringify({ name: name, parentId: currentFolderId })
+            body: JSON.stringify({ name: name, parentId: parentId || null })
           })
             .then(function () {
               notify('文件夹已创建。', 'ok');
@@ -1429,6 +2414,10 @@
               newFolderButton.disabled = false;
             });
         });
+      }
+
+      function createFolder() {
+        createFolderIn(currentFolderId);
       }
 
       function renameFile(file) {
@@ -1498,6 +2487,30 @@
         pasteButton.disabled = true;
         setStatus('正在粘贴');
 
+        if (clipboardItem.kind === 'files') {
+          runSequential(clipboardItem.ids, function (fileId) {
+            return api('/api/files/' + encodeURIComponent(fileId) + '/' + clipboardItem.action, {
+              method: 'POST',
+              body: JSON.stringify({ folderId: currentFolderId })
+            });
+          })
+            .then(function () {
+              notify(clipboardItem.action === 'cut' ? '已移动选中的图纸。' : '已复制选中的图纸。', 'ok');
+
+              if (clipboardItem.action === 'cut') {
+                clipboardItem = null;
+              }
+
+              clearSelectedFiles();
+              return loadFiles();
+            })
+            .catch(function (err) {
+              notify(operationErrorText(err), 'error');
+            })
+            .finally(updateClipboardState);
+          return;
+        }
+
         var endpoint = clipboardItem.kind === 'folder' ?
           '/api/folders/' + encodeURIComponent(clipboardItem.id) + '/' + clipboardItem.action :
           '/api/files/' + encodeURIComponent(clipboardItem.id) + '/' + clipboardItem.action;
@@ -1561,6 +2574,132 @@
         a.remove();
       }
 
+      function toggleSelectAllFiles() {
+        var pageFileIdSet = new Set(pageFileIds);
+        var filesOnPage = childFiles(currentFolderId).filter(function (file) {
+          return pageFileIdSet.has(file.id);
+        });
+
+        if (selectAllFilesCheckbox.checked) {
+          filesOnPage.forEach(function (file) {
+            selectedFileIds.add(file.id);
+          });
+        } else {
+          filesOnPage.forEach(function (file) {
+            selectedFileIds.delete(file.id);
+          });
+        }
+
+        updateSelectionState();
+      }
+
+      function openSelectedFiles() {
+        var selected = currentSelectedFiles();
+        var blocked = false;
+
+        if (!selected.length) {
+          return;
+        }
+
+        if (selected.length === 1) {
+          window.location.href = '/editor.html?id=' + encodeURIComponent(selected[0].id);
+          return;
+        }
+
+        selected.forEach(function (file) {
+          var opened = window.open('/editor.html?id=' + encodeURIComponent(file.id), '_blank');
+
+          if (opened) {
+            try {
+              opened.opener = null;
+            } catch (ignore) {}
+          } else {
+            blocked = true;
+          }
+        });
+
+        notify(blocked ? '浏览器阻止了部分窗口，请允许弹出窗口后重试。' : '已打开 ' + selected.length + ' 个图纸。', blocked ? 'warn' : 'ok');
+      }
+
+      function renameSelectedFile() {
+        var selected = currentSelectedFiles();
+
+        if (selected.length === 1) {
+          renameFile(selected[0]);
+        }
+      }
+
+      function copySelectedFiles() {
+        setClipboardFiles('copy', currentSelectedFiles());
+      }
+
+      function cutSelectedFiles() {
+        setClipboardFiles('cut', currentSelectedFiles());
+      }
+
+      function shareSelectedFile() {
+        var selected = currentSelectedFiles();
+
+        if (selected.length === 1) {
+          shareFile(selected[0]);
+        }
+      }
+
+      function shareSelectedFileInternal() {
+        var selected = currentSelectedFiles();
+
+        if (selected.length === 1) {
+          shareFileInternal(selected[0]);
+        }
+      }
+
+      function downloadSelectedFiles() {
+        var selected = currentSelectedFiles();
+
+        selected.forEach(downloadFile);
+
+        if (selected.length) {
+          notify('已开始下载 ' + selected.length + ' 个图纸。', 'ok');
+        }
+      }
+
+      function deleteSelectedFiles() {
+        var selected = currentSelectedFiles();
+
+        if (!selected.length) {
+          return;
+        }
+
+        CompanyDialog.confirm({
+          title: '批量删除图纸',
+          message: '确定删除选中的 ' + selected.length + ' 个图纸？',
+          confirmText: '删除',
+          cancelText: '保留',
+          danger: true
+        }).then(function (confirmed) {
+          if (!confirmed) {
+            return;
+          }
+
+          bulkDeleteButton.disabled = true;
+          setStatus('正在删除');
+          runSequential(selected, function (file) {
+            return api('/api/files/' + encodeURIComponent(file.id), { method: 'DELETE' });
+          })
+            .then(function () {
+              clearSelectedFiles();
+              setStatus('已删除', 'ok');
+              notify('已删除选中的图纸。', 'ok');
+              return loadFiles();
+            })
+            .catch(function () {
+              setStatus('删除失败', 'error');
+              notify('批量删除失败，请稍后重试。', 'error');
+            })
+            .finally(updateSelectionState);
+        });
+      }
+
       function deleteFile(file) {
         CompanyDialog.confirm({
           title: '删除图纸',
@@ -1613,34 +2752,6 @@
         });
       }
 
-      function editProfileName() {
-        CompanyDialog.prompt({
-          title: '设置姓名',
-          label: '姓名',
-          value: currentProfileName,
-          placeholder: '例如：张三',
-          confirmText: '保存',
-          required: false
-        }).then(function (name) {
-          if (name == null) {
-            return;
-          }
-
-          api('/api/profile', {
-            method: 'PUT',
-            body: JSON.stringify({ name: name })
-          })
-            .then(function (body) {
-              updateWhoami(body.profile || {});
-              notify(currentProfileName ? '姓名已保存。' : '已清空姓名，将显示工号。', 'ok');
-              return loadInternalShares();
-            })
-            .catch(function () {
-              notify('姓名保存失败，请稍后重试。', 'error');
-            });
-        });
-      }
-
       function logout() {
         CompanyDialog.confirm({
           title: '退出登录',
@@ -1670,11 +2781,76 @@
           adminButton.classList.toggle('hidden', !body.canAdmin);
           loadFiles();
           loadInternalShares();
+          loadAiProviders();
         })
         .catch(function () {});
 
       loadAiConfig();
       var lastAiProviderFormat = aiProviderFormat.value;
+
+      aiProviderSelect.addEventListener('change', function () {
+        var provider = aiProviderById(aiProviderSelect.value);
+
+        if (provider) {
+          applyAiProvider(provider);
+        } else {
+          aiApiKey.placeholder = '可在设置里添加到工号';
+          renderAiProviderList();
+          updateAiCurrentConfig();
+          scheduleAiConfigSave();
+        }
+
+        saveAiProviderSelection(aiProviderSelect.value).catch(function (err) {
+          if (!err || err.error !== 'not_authenticated') {
+            var message = aiErrorText(err);
+            setAiStatus(message, 'error');
+            notify(message, 'error');
+          }
+        });
+      });
+
+      aiProviderSettingsButton.addEventListener('click', openAiSettings);
+      aiSettingsCloseButton.addEventListener('click', closeAiSettings);
+      aiProviderSettings.addEventListener('mousedown', function (evt) {
+        if (evt.target === aiProviderSettings) {
+          closeAiSettings();
+        }
+      });
+
+      aiNewProviderButton.addEventListener('click', startNewAiProvider);
+      aiSaveProviderButton.addEventListener('click', saveAiProvider);
+      aiDeleteProviderButton.addEventListener('click', deleteAiProvider);
+      aiCancelProviderEditButton.addEventListener('click', function () {
+        resetAiProviderEdit();
+
+        if (aiProviderSelect.value) {
+          applyAiProvider(aiProviderById(aiProviderSelect.value));
+        }
+      });
+      aiProviderName.addEventListener('keydown', function (evt) {
+        if (evt.key === 'Enter') {
+          evt.preventDefault();
+          saveAiProvider();
+        }
+      });
+      aiProviderList.addEventListener('click', function (evt) {
+        var selectButton = evt.target.closest('[data-provider-select]');
+        var editButton = evt.target.closest('[data-provider-edit]');
+        var providerId = selectButton ? selectButton.getAttribute('data-provider-select') : editButton && editButton.getAttribute('data-provider-edit');
+        var provider = aiProviderById(providerId);
+
+        if (!provider) {
+          return;
+        }
+
+        if (editButton) {
+          editAiProvider(provider);
+          return;
+        }
+
+        applyAiProvider(provider);
+        saveAiProviderSelection(provider.id).catch(function () {});
+      });
 
       aiProviderFormat.addEventListener('change', function () {
         var previousDefault = providerDefaultBaseUrl(lastAiProviderFormat);
@@ -1695,10 +2871,12 @@
       aiModelSelect.addEventListener('change', function () {
         aiModel.value = aiModelSelect.value;
         setAiModelHint(aiModel.value ? '已选择 ' + aiModel.value : '');
+        updateAiCurrentConfig();
         scheduleAiConfigSave();
       });
       aiModel.addEventListener('input', function () {
         resetAiModelOptions('加载模型后选择', aiModel.value.trim(), { keepManualModelVisible: true });
+        updateAiCurrentConfig();
         scheduleAiConfigSave();
       });
 
@@ -1715,10 +2893,33 @@
       });
 
       refreshButton.addEventListener('click', loadFiles);
+      selectAllFilesCheckbox.addEventListener('change', toggleSelectAllFiles);
+      pageSizeSelect.addEventListener('change', function () {
+        pageSize = Number(pageSizeSelect.value) || 25;
+        currentPage = 1;
+        renderLibrary();
+      });
+      prevPageButton.addEventListener('click', function () {
+        goToPage(currentPage - 1);
+      });
+      nextPageButton.addEventListener('click', function () {
+        goToPage(currentPage + 1);
+      });
+      bulkOpenButton.addEventListener('click', openSelectedFiles);
+      bulkRenameButton.addEventListener('click', renameSelectedFile);
+      bulkCopyButton.addEventListener('click', copySelectedFiles);
+      bulkCutButton.addEventListener('click', cutSelectedFiles);
+      bulkShareButton.addEventListener('click', shareSelectedFile);
+      bulkInternalShareButton.addEventListener('click', shareSelectedFileInternal);
+      bulkDownloadButton.addEventListener('click', downloadSelectedFiles);
+      bulkDeleteButton.addEventListener('click', deleteSelectedFiles);
+      clearSelectionButton.addEventListener('click', clearSelectedFiles);
       refreshInternalSharesButton.addEventListener('click', loadInternalShares);
       sendInternalMessageButton.addEventListener('click', sendInternalMessage);
       openInternalShareButton.addEventListener('click', openInternalShareViewer);
-      profileButton.addEventListener('click', editProfileName);
+      profileButton.addEventListener('click', function () {
+        window.location.href = '/profile.html';
+      });
       adminButton.addEventListener('click', function () {
         window.location.href = '/admin.html';
       });
@@ -1765,6 +2966,14 @@
       });
       newButton.addEventListener('click', createFile);
       newFolderButton.addEventListener('click', createFolder);
+      folderTree.addEventListener('contextmenu', function (evt) {
+        if (evt.target === folderTree) {
+          showFolderTreeContextMenu(evt, null);
+        }
+      });
+      folderTree.addEventListener('scroll', hideFolderTreeContextMenu);
+      document.addEventListener('mousedown', hideFolderTreeContextMenu);
+      window.addEventListener('resize', hideFolderTreeContextMenu);
       pasteButton.addEventListener('click', pasteClipboard);
       aiToolbarButton.addEventListener('click', openAiPanel);
       aiEntryButton.addEventListener('click', openAiPanel);
@@ -1778,7 +2987,13 @@
         }
       });
       document.addEventListener('keydown', function (evt) {
-        if (evt.key === 'Escape' && !aiAssistant.classList.contains('hidden')) {
+        if (evt.key === 'Escape') {
+          hideFolderTreeContextMenu();
+        }
+
+        if (evt.key === 'Escape' && !aiProviderSettings.classList.contains('hidden')) {
+          closeAiSettings();
+        } else if (evt.key === 'Escape' && !aiAssistant.classList.contains('hidden')) {
           closeAiPanel();
         }
       });

@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+
 const DIAGRAM_TYPES = {
   flowchart: {
     label: '流程图',
@@ -35,6 +38,7 @@ const DIAGRAM_TYPES = {
 
 const NODE_TYPES = new Set(['start', 'process', 'decision', 'data', 'end', 'subprocess']);
 const FONT = 'Microsoft YaHei,Arial';
+const SKILL_DIR = path.join(__dirname, 'diagram-skills');
 
 function skillError(status, code, message) {
   return Object.assign(new Error(message), { status, code, publicMessage: message });
@@ -65,9 +69,89 @@ function diagramTypeOptions() {
   return Object.entries(DIAGRAM_TYPES).map(([value, info]) => ({ value, label: info.label }));
 }
 
+function normalizeSkillMarkdown(value, maxLength = 3200) {
+  return String(value || '')
+    .replace(/^---[\s\S]*?---\s*/m, '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/\s+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function readDiagramSkillMarkdown(type) {
+  const filePath = path.join(SKILL_DIR, type, 'SKILL.md');
+
+  try {
+    return normalizeSkillMarkdown(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn(`Skipping invalid diagram skill ${filePath}: ${err.message}`);
+    }
+  }
+
+  return '';
+}
+
+function readDiagramSkillJson(type) {
+  const filePath = path.join(SKILL_DIR, `${type}.json`);
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn(`Skipping invalid diagram skill ${filePath}: ${err.message}`);
+    }
+  }
+
+  return {};
+}
+
+function skillInstructionBlock(type) {
+  const markdown = readDiagramSkillMarkdown(type);
+
+  if (markdown) {
+    return [
+      `Developer-maintained ${diagramTypeLabel(type)} skill from lib/diagram-skills/${type}/SKILL.md:`,
+      markdown
+    ].join('\n');
+  }
+
+  const skill = readDiagramSkillJson(type);
+  const lines = [];
+
+  if (skill.description) {
+    lines.push(`Developer-maintained ${diagramTypeLabel(type)} skill: ${sanitizeDiagramText(skill.description, '', 180)}`);
+  }
+
+  if (Array.isArray(skill.rules) && skill.rules.length) {
+    lines.push('Type-specific rules:');
+    skill.rules.slice(0, 20).forEach((rule) => {
+      lines.push(`- ${sanitizeDiagramText(rule, '', 220)}`);
+    });
+  }
+
+  if (Array.isArray(skill.avoid) && skill.avoid.length) {
+    lines.push('Avoid:');
+    skill.avoid.slice(0, 12).forEach((rule) => {
+      lines.push(`- ${sanitizeDiagramText(rule, '', 220)}`);
+    });
+  }
+
+  if (skill.schemaHint) {
+    lines.push(`Schema hint: ${sanitizeDiagramText(skill.schemaHint, '', 280)}`);
+  }
+
+  return lines.join('\n');
+}
+
 function buildDiagramInstruction(prompt, requestedType) {
   const type = normalizeDiagramType(requestedType);
   const label = diagramTypeLabel(type);
+  const skillBlock = skillInstructionBlock(type);
 
   return [
     `Create an editable draw.io ${label} from the user request.`,
@@ -82,6 +166,8 @@ function buildDiagramInstruction(prompt, requestedType) {
     '- Avoid decorative nodes that do not carry process, domain, data, or system meaning.',
     '- For decisions, label outgoing branches with concise yes/no or business-condition labels.',
     '- For architecture/data diagrams, group related elements by layer, owner, bounded context, or data domain.',
+    '- Use swimlanes only when diagramType is "swimlane"; architecture groups are visual boundaries, not process lanes.',
+    ...(skillBlock ? ['', skillBlock] : []),
     '',
     schemaForDiagramType(type),
     '',
@@ -127,7 +213,7 @@ function schemaForDiagramType(type) {
     return [
       'Schema for architecture/C4 diagram:',
       '{"title":"short title","diagramType":"' + type + '","groups":[{"id":"client","label":"Client layer"}],"components":[{"id":"web","label":"Web App","type":"client|gateway|service|database|queue|external|component","group":"client","description":"optional"}],"connections":[{"from":"web","to":"api","label":"HTTPS"}]}',
-      'Use groups for layers or bounded contexts. Put hub components such as queues centrally.'
+      'Use groups for layers or bounded contexts, not for swimlanes or chronological phases. Put hub components such as queues centrally.'
     ].join('\n');
   }
 
@@ -559,6 +645,63 @@ function roundedGrid(value) {
   return Math.round(value / 10) * 10;
 }
 
+function normalizeMeasuredText(value) {
+  return String(value == null ? '' : value)
+    .replace(/&amp;#xa;|&#xa;|&#10;|<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&[A-Za-z0-9#]+;/g, 'x')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+}
+
+function visualTextUnits(value) {
+  return Array.from(String(value || '')).reduce((sum, char) => {
+    const code = char.codePointAt(0);
+
+    if (/\s/.test(char)) {
+      return sum + 0.35;
+    }
+
+    if (
+      (code >= 0x2e80 && code <= 0x9fff) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xff00 && code <= 0xffef)
+    ) {
+      return sum + 1;
+    }
+
+    if (code < 128) {
+      return sum + (/[A-Z0-9]/.test(char) ? 0.62 : 0.54);
+    }
+
+    return sum + 0.9;
+  }, 0);
+}
+
+function labelSize(value, options = {}) {
+  const fontSize = options.fontSize || 13;
+  const lineHeight = options.lineHeight || Math.ceil(fontSize * 1.45);
+  const paddingX = options.paddingX == null ? 24 : options.paddingX;
+  const paddingY = options.paddingY == null ? 18 : options.paddingY;
+  const minWidth = options.minWidth || 160;
+  const maxWidth = options.maxWidth || 320;
+  const minHeight = options.minHeight || 56;
+  const lines = normalizeMeasuredText(value).split('\n').map((line) => line.trim()).filter(Boolean);
+  const units = (lines.length ? lines : ['']).map(visualTextUnits);
+  const widestUnits = Math.max(1, ...units);
+  const naturalWidth = paddingX * 2 + widestUnits * fontSize;
+  const width = roundedGrid(Math.min(maxWidth, Math.max(minWidth, naturalWidth)));
+  const lineCapacity = Math.max(4, Math.floor((width - paddingX * 2) / fontSize));
+  const wrappedLines = units.reduce((sum, unitCount) => sum + Math.max(1, Math.ceil(unitCount / lineCapacity)), 0);
+  const height = roundedGrid(Math.max(minHeight, paddingY * 2 + wrappedLines * lineHeight));
+
+  return { width, height };
+}
+
+function maxLabelWidth(values, options) {
+  return values.reduce((width, value) => Math.max(width, labelSize(value, options).width), 0);
+}
+
 function nodeStyle(type) {
   const common = `whiteSpace=wrap;html=1;strokeWidth=2;fontColor=#17211f;fontSize=14;fontFamily=${FONT};align=center;verticalAlign=middle;spacing=12;shadow=0;`;
 
@@ -585,20 +728,28 @@ function nodeStyle(type) {
   return `${common}rounded=1;arcSize=10;fillColor=#fffdf8;strokeColor=#215fbd;`;
 }
 
-function flowchartNodeSize(type) {
+function flowchartNodeSize(type, label = '') {
+  let base;
+
   if (type === 'decision') {
-    return { width: 176, height: 96 };
+    base = { width: 176, height: 96, maxWidth: 300, paddingX: 38, paddingY: 26 };
+  } else if (type === 'start' || type === 'end') {
+    base = { width: 184, height: 64, maxWidth: 270, paddingX: 30, paddingY: 18 };
+  } else if (type === 'data') {
+    base = { width: 210, height: 72, maxWidth: 300, paddingX: 34, paddingY: 20 };
+  } else {
+    base = { width: 210, height: 72, maxWidth: 300, paddingX: 30, paddingY: 20 };
   }
 
-  if (type === 'start' || type === 'end') {
-    return { width: 184, height: 64 };
-  }
-
-  if (type === 'data') {
-    return { width: 210, height: 72 };
-  }
-
-  return { width: 210, height: 72 };
+  return labelSize(label, {
+    minWidth: base.width,
+    maxWidth: base.maxWidth,
+    minHeight: base.height,
+    fontSize: 14,
+    lineHeight: 22,
+    paddingX: base.paddingX,
+    paddingY: base.paddingY
+  });
 }
 
 function edgeLabelKind(label) {
@@ -837,13 +988,23 @@ function swimlaneEdgeWaypoints(sourceLayout, targetLayout, context, edgeIndex) {
   ]);
 }
 
-function edgeGeometryXml(points) {
+function edgeGeometryXml(points, labelOffset = null) {
+  const attrs = ['relative="1"'];
+
+  if (labelOffset && Number.isFinite(labelOffset.x)) {
+    attrs.push(`x="${labelOffset.x}"`);
+  }
+
+  if (labelOffset && Number.isFinite(labelOffset.y)) {
+    attrs.push(`y="${labelOffset.y}"`);
+  }
+
   if (!points.length) {
-    return '<mxGeometry relative="1" as="geometry"/>';
+    return `<mxGeometry ${attrs.join(' ')} as="geometry"/>`;
   }
 
   return [
-    '<mxGeometry relative="1" as="geometry">',
+    `<mxGeometry ${attrs.join(' ')} as="geometry">`,
     '<Array as="points">',
     points.map((point) => `<mxPoint x="${point.x}" y="${point.y}"/>`).join(''),
     '</Array>',
@@ -853,8 +1014,6 @@ function edgeGeometryXml(points) {
 
 function renderFlowchartXml(spec) {
   const startY = 80;
-  const gapY = 136;
-  const laneGap = 285;
   const minPageWidth = 900;
   const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
   const nodeCellIds = new Map();
@@ -862,13 +1021,18 @@ function renderFlowchartXml(spec) {
   const indexById = new Map(spec.nodes.map((node, index) => [node.id, index]));
   const lanes = assignFlowchartLanes(spec, indexById);
   const laneValues = Array.from(lanes.values());
+  const nodeSizes = new Map(spec.nodes.map((node) => [node.id, flowchartNodeSize(node.type, node.label)]));
+  const maxNodeWidth = Math.max(210, ...Array.from(nodeSizes.values()).map((size) => size.width));
+  const maxNodeHeight = Math.max(96, ...Array.from(nodeSizes.values()).map((size) => size.height));
+  const gapY = Math.max(136, maxNodeHeight + 64);
+  const laneGap = Math.max(285, maxNodeWidth + 110);
   const maxAbsLane = Math.max(1, ...laneValues.map((lane) => Math.abs(lane)));
   const pageWidth = Math.max(minPageWidth, maxAbsLane * 2 * laneGap + 480);
   const centerX = pageWidth / 2;
 
   spec.nodes.forEach((node, index) => {
     const cellId = `ai_node_${node.id}`;
-    const size = flowchartNodeSize(node.type);
+    const size = nodeSizes.get(node.id);
     const lane = lanes.get(node.id) || 0;
     const x = centerX + lane * laneGap - size.width / 2;
     const y = startY + index * gapY;
@@ -904,13 +1068,15 @@ function renderFlowchartXml(spec) {
 }
 
 function renderSwimlaneXml(spec) {
-  const laneWidth = 270;
-  const laneGap = 74;
+  const nodeSizes = new Map(spec.nodes.map((node) => [node.id, flowchartNodeSize(node.type, node.label)]));
+  const maxNodeWidth = Math.max(210, ...Array.from(nodeSizes.values()).map((size) => size.width));
+  const maxNodeHeight = Math.max(72, ...Array.from(nodeSizes.values()).map((size) => size.height));
+  const laneWidth = Math.max(270, maxNodeWidth + 66);
+  const laneGap = Math.max(74, Math.ceil(maxNodeWidth / 3));
   const startX = 40;
   const startY = 70;
   const laneHeader = 34;
-  const nodeWidth = 204;
-  const rowGap = 150;
+  const rowGap = Math.max(150, maxNodeHeight + 78);
   const nodeCellIds = new Map();
   const nodeLayouts = new Map();
   const laneOrder = (spec.lanes.length ? spec.lanes : [{ id: 'default', label: '流程' }])
@@ -927,7 +1093,6 @@ function renderSwimlaneXml(spec) {
   });
 
   const maxRows = Math.max(2, spec.nodes.length);
-  const maxNodeHeight = Math.max(72, ...spec.nodes.map((node) => flowchartNodeSize(node.type).height));
   const laneHeight = laneHeader + 32 + (maxRows - 1) * rowGap + maxNodeHeight + 52;
   const groupRight = startX + laneOrder.length * laneWidth + Math.max(0, laneOrder.length - 1) * laneGap;
 
@@ -951,8 +1116,8 @@ function renderSwimlaneXml(spec) {
   spec.nodes.forEach((node, nodeIndex) => {
     const laneLayout = laneLayouts.get(node.lane) || Array.from(laneLayouts.values())[0];
     const cellId = `ai_node_${node.id}`;
-    const size = flowchartNodeSize(node.type);
-    const width = Math.min(nodeWidth, size.width);
+    const size = nodeSizes.get(node.id);
+    const width = size.width;
     const height = size.height;
     const relativeX = (laneWidth - width) / 2;
     const relativeY = laneHeader + 32 + nodeIndex * rowGap;
@@ -1004,8 +1169,7 @@ function renderSwimlaneXml(spec) {
 }
 
 function renderSequenceXml(spec) {
-  const participantWidth = 160;
-  const participantGap = 210;
+  const participantGap = 90;
   const startX = 70;
   const topY = 70;
   const messageStartY = 175;
@@ -1014,20 +1178,32 @@ function renderSequenceXml(spec) {
   const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
   const participantLayouts = new Map();
   const lifelineStyle = `shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;portConstraint=eastwest;fontFamily=${FONT};fontSize=14;fillColor=#fffdf8;strokeColor=#6c8ebf;`;
+  let cursorX = startX;
 
   spec.participants.forEach((participant, index) => {
-    const x = startX + index * participantGap;
+    const width = labelSize(participant.label, {
+      minWidth: 160,
+      maxWidth: 260,
+      minHeight: 58,
+      fontSize: 14,
+      lineHeight: 22,
+      paddingX: 28,
+      paddingY: 18
+    }).width;
+    const x = cursorX;
     const cellId = `ai_participant_${participant.id}`;
     participantLayouts.set(participant.id, {
       cellId,
       x,
-      centerX: x + participantWidth / 2
+      width,
+      centerX: x + width / 2
     });
     cells.push([
       `<mxCell id="${escapeXml(cellId)}" value="${escapeXml(participant.label)}" style="${escapeXml(lifelineStyle)}" vertex="1" parent="1">`,
-      `<mxGeometry x="${x}" y="${topY}" width="${participantWidth}" height="${height}" as="geometry"/>`,
+      `<mxGeometry x="${x}" y="${topY}" width="${width}" height="${height}" as="geometry"/>`,
       '</mxCell>'
     ].join(''));
+    cursorX += width + participantGap;
   });
 
   spec.messages.forEach((message, index) => {
@@ -1064,7 +1240,7 @@ function renderSequenceXml(spec) {
     ].join(''));
   });
 
-  const pageWidth = Math.max(900, startX * 2 + spec.participants.length * participantWidth + Math.max(0, spec.participants.length - 1) * (participantGap - participantWidth));
+  const pageWidth = Math.max(900, cursorX - participantGap + startX);
   const pageHeight = Math.max(700, topY + height + 70);
   return graphModel(cells, pageWidth, pageHeight);
 }
@@ -1094,22 +1270,48 @@ function classRelationStyle(type) {
 
 function renderClassXml(spec) {
   const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(spec.classes.length))));
-  const boxWidth = 250;
+  const boxWidth = Math.max(260, Math.min(380, maxLabelWidth(
+    spec.classes.flatMap((item) => [
+      item.stereotype ? `<<${item.stereotype}>> ${item.name}` : item.name,
+      ...item.attributes,
+      ...item.methods
+    ]),
+    { minWidth: 260, maxWidth: 380, fontSize: 12, paddingX: 24 }
+  )));
   const gapX = 80;
   const gapY = 90;
   const startX = 60;
   const startY = 70;
   const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
   const layouts = new Map();
+  const classSizes = spec.classes.map((item) => {
+    const attrHeight = Math.max(34, item.attributes.length * 22 + 14);
+    const methodHeight = Math.max(34, item.methods.length * 22 + 14);
+    return { attrHeight, methodHeight, height: 34 + attrHeight + methodHeight };
+  });
+  const rowHeights = [];
+
+  classSizes.forEach((size, index) => {
+    const row = Math.floor(index / columns);
+    rowHeights[row] = Math.max(rowHeights[row] || 0, size.height);
+  });
+
+  function rowTop(row) {
+    let y = startY;
+
+    for (let index = 0; index < row; index += 1) {
+      y += rowHeights[index] + gapY;
+    }
+
+    return y;
+  }
 
   spec.classes.forEach((item, index) => {
     const col = index % columns;
     const row = Math.floor(index / columns);
-    const attrHeight = Math.max(34, item.attributes.length * 22 + 14);
-    const methodHeight = Math.max(34, item.methods.length * 22 + 14);
-    const height = 34 + attrHeight + methodHeight;
+    const { attrHeight, methodHeight, height } = classSizes[index];
     const x = startX + col * (boxWidth + gapX);
-    const y = startY + row * (height + gapY);
+    const y = rowTop(row);
     const cellId = `ai_class_${item.id}`;
     const header = item.stereotype ? `&lt;&lt;${item.stereotype}&gt;&gt;&#xa;${item.name}` : item.name;
     const style = `swimlane;fontStyle=1;align=center;startSize=34;html=1;whiteSpace=wrap;fontFamily=${FONT};fontSize=14;fillColor=#edf4ff;strokeColor=#6c8ebf;strokeWidth=2;`;
@@ -1145,30 +1347,57 @@ function renderClassXml(spec) {
 
   const rows = Math.ceil(spec.classes.length / columns);
   const pageWidth = Math.max(900, startX * 2 + columns * boxWidth + (columns - 1) * gapX);
-  const pageHeight = Math.max(700, startY * 2 + rows * 260 + (rows - 1) * gapY);
+  const contentHeight = rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rows - 1) * gapY;
+  const pageHeight = Math.max(700, startY * 2 + contentHeight);
   return graphModel(cells, pageWidth, pageHeight);
 }
 
 function renderErdXml(spec) {
   const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(spec.entities.length))));
-  const tableWidth = 270;
+  const tableWidth = Math.max(300, Math.min(420, maxLabelWidth(
+    spec.entities.flatMap((entity) => [
+      entity.name,
+      ...entity.columns.map((column) => {
+        const prefix = column.pk ? 'PK ' : column.fk ? 'FK ' : '';
+        return `${prefix}${column.name}${column.type ? ': ' + column.type : ''}`;
+      })
+    ]),
+    { minWidth: 300, maxWidth: 420, fontSize: 12, paddingX: 28 }
+  )));
   const gapX = 90;
   const gapY = 90;
   const startX = 60;
   const startY = 70;
-  const rowHeight = 26;
-  const headerHeight = 32;
+  const rowHeight = 28;
+  const headerHeight = 34;
   const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
   const layouts = new Map();
+  const entityHeights = spec.entities.map((entity) => headerHeight + Math.max(1, entity.columns.length) * rowHeight);
+  const rowHeights = [];
+
+  entityHeights.forEach((height, index) => {
+    const row = Math.floor(index / columns);
+    rowHeights[row] = Math.max(rowHeights[row] || 0, height);
+  });
+
+  function rowTop(row) {
+    let y = startY;
+
+    for (let index = 0; index < row; index += 1) {
+      y += rowHeights[index] + gapY;
+    }
+
+    return y;
+  }
 
   spec.entities.forEach((entity, index) => {
     const col = index % columns;
     const row = Math.floor(index / columns);
-    const height = headerHeight + entity.columns.length * rowHeight + 8;
+    const height = entityHeights[index];
     const x = startX + col * (tableWidth + gapX);
-    const y = startY + row * (height + gapY);
+    const y = rowTop(row);
     const cellId = `ai_entity_${entity.id}`;
-    const style = 'shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;fixedRows=1;rowLines=0;fontStyle=1;strokeColor=#6c8ebf;fillColor=#dae8fc;html=1;whiteSpace=wrap;';
+    const style = `swimlane;startSize=${headerHeight};html=1;whiteSpace=wrap;rounded=0;container=1;collapsible=0;recursiveResize=0;resizeParent=0;fontStyle=1;fontSize=13;fontFamily=${FONT};align=center;verticalAlign=middle;strokeColor=#6c8ebf;fillColor=#dae8fc;strokeWidth=2;`;
 
     layouts.set(entity.id, { cellId, x, y, width: tableWidth, height, lane: col, index });
     cells.push([
@@ -1180,7 +1409,22 @@ function renderErdXml(spec) {
     entity.columns.forEach((column, columnIndex) => {
       const prefix = column.pk ? 'PK ' : column.fk ? 'FK ' : '';
       const label = `${prefix}${column.name}${column.type ? ': ' + column.type : ''}`;
-      const rowStyle = `shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;fillColor=none;collapsible=0;dropTarget=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontFamily=${FONT};${column.pk ? 'fontStyle=1;' : ''}`;
+      const rowStyle = [
+        'rounded=0',
+        'whiteSpace=wrap',
+        'html=1',
+        'align=left',
+        'verticalAlign=middle',
+        'spacingLeft=8',
+        'spacingRight=6',
+        'strokeColor=#d9e0da',
+        'fillColor=' + (columnIndex % 2 === 0 ? '#ffffff' : '#f7faf7'),
+        'fontColor=#17211f',
+        'fontSize=12',
+        `fontFamily=${FONT}`,
+        'rotatable=0',
+        column.pk ? 'fontStyle=1' : ''
+      ].filter(Boolean).join(';') + ';';
       cells.push([
         `<mxCell id="${escapeXml(cellId)}_col_${columnIndex + 1}" value="${escapeXml(label)}" style="${escapeXml(rowStyle)}" vertex="1" parent="${escapeXml(cellId)}">`,
         `<mxGeometry x="0" y="${headerHeight + columnIndex * rowHeight}" width="${tableWidth}" height="${rowHeight}" as="geometry"/>`,
@@ -1207,16 +1451,17 @@ function renderErdXml(spec) {
 
   const rows = Math.ceil(spec.entities.length / columns);
   const pageWidth = Math.max(900, startX * 2 + columns * tableWidth + (columns - 1) * gapX);
-  const pageHeight = Math.max(700, startY * 2 + rows * 280 + (rows - 1) * gapY);
+  const contentHeight = rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rows - 1) * gapY;
+  const pageHeight = Math.max(700, startY * 2 + contentHeight);
   return graphModel(cells, pageWidth, pageHeight);
 }
 
 function componentStyle(type, c4) {
-  const common = `rounded=1;arcSize=8;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=13;fontFamily=${FONT};align=center;verticalAlign=middle;spacing=10;`;
+  const common = `rounded=1;arcSize=8;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=13;fontFamily=${FONT};align=center;verticalAlign=middle;spacing=12;shadow=0;`;
   const normalized = String(type || '').toLowerCase();
 
   if (normalized === 'database' || normalized === 'db') {
-    return `shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;strokeWidth=2;fontSize=13;fontFamily=${FONT};fillColor=#d5e8d4;strokeColor=#82b366;`;
+    return `shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;strokeWidth=2;fontSize=13;fontFamily=${FONT};align=center;verticalAlign=middle;spacing=12;fillColor=#d5e8d4;strokeColor=#82b366;`;
   }
 
   if (normalized === 'queue' || normalized === 'bus' || normalized === 'event') {
@@ -1238,15 +1483,136 @@ function componentStyle(type, c4) {
   return `${common}fillColor=${c4 ? '#63BEF2' : '#edf4ff'};strokeColor=${c4 ? '#2086C9' : '#6c8ebf'};`;
 }
 
+function architectureComponentLabel(component) {
+  return component.description ? `${component.label}&#xa;${component.description}` : component.label;
+}
+
+function architectureComponentSize(component) {
+  const size = labelSize(architectureComponentLabel(component), {
+    minWidth: 220,
+    maxWidth: 330,
+    minHeight: 78,
+    fontSize: 13,
+    lineHeight: 21,
+    paddingX: 28,
+    paddingY: 20
+  });
+  const normalized = String(component.type || '').toLowerCase();
+
+  if (normalized === 'database' || normalized === 'db') {
+    return { width: Math.max(size.width, 230), height: Math.max(size.height + 8, 86) };
+  }
+
+  return size;
+}
+
+function architectureGroupContainerStyle(c4) {
+  return [
+    'rounded=1',
+    'arcSize=6',
+    'whiteSpace=wrap',
+    'html=1',
+    'container=1',
+    'collapsible=0',
+    'recursiveResize=0',
+    'connectable=0',
+    'strokeWidth=2',
+    `fontFamily=${FONT}`,
+    'fontSize=14',
+    'shadow=0',
+    `fillColor=${c4 ? '#f2f9ff' : '#f7faf9'}`,
+    `strokeColor=${c4 ? '#2086C9' : '#9fb3ad'}`,
+    c4 ? 'dashed=1' : ''
+  ].filter(Boolean).join(';') + ';';
+}
+
+function architectureGroupLabelStyle(c4) {
+  return [
+    'text',
+    'html=1',
+    'whiteSpace=wrap',
+    'strokeColor=none',
+    'fillColor=none',
+    'align=center',
+    'verticalAlign=middle',
+    'fontStyle=1',
+    'fontSize=14',
+    `fontFamily=${FONT}`,
+    `fontColor=${c4 ? '#06315C' : '#17211f'}`,
+    'spacing=0'
+  ].join(';') + ';';
+}
+
+function architectureEdgeStyle(sourceLayout, targetLayout) {
+  const targetRightOfSource = targetLayout.x >= sourceLayout.x;
+  const pins = targetRightOfSource
+    ? ['exitX=1', 'exitY=0.5', 'exitDx=0', 'exitDy=0', 'entryX=0', 'entryY=0.5', 'entryDx=0', 'entryDy=0']
+    : ['exitX=0', 'exitY=0.5', 'exitDx=0', 'exitDy=0', 'entryX=1', 'entryY=0.5', 'entryDx=0', 'entryDy=0'];
+
+  return [
+    'edgeStyle=orthogonalEdgeStyle',
+    'rounded=1',
+    'orthogonalLoop=1',
+    'jettySize=auto',
+    'html=1',
+    'endArrow=blockThin',
+    'endFill=1',
+    'fontSize=11',
+    `fontFamily=${FONT}`,
+    'fontColor=#404040',
+    'strokeColor=#6f7f7a',
+    'strokeWidth=2',
+    'labelBackgroundColor=#ffffff',
+    'verticalAlign=bottom',
+    'spacing=8',
+    ...pins
+  ].join(';') + ';';
+}
+
+function architectureEdgeWaypoints(sourceLayout, targetLayout, edgeIndex) {
+  const sourceCenterX = roundedGrid(sourceLayout.x + sourceLayout.width / 2);
+  const sourceCenterY = roundedGrid(sourceLayout.y + sourceLayout.height / 2);
+  const targetCenterX = roundedGrid(targetLayout.x + targetLayout.width / 2);
+  const targetCenterY = roundedGrid(targetLayout.y + targetLayout.height / 2);
+  const sourceRight = sourceLayout.x + sourceLayout.width;
+  const targetRight = targetLayout.x + targetLayout.width;
+  const sameColumn = Math.abs(sourceCenterX - targetCenterX) < 20;
+
+  if (sameColumn) {
+    const routeX = roundedGrid(Math.max(sourceRight, targetRight) + 56 + edgeIndex * 8);
+    return compactWaypoints([
+      { x: routeX, y: sourceCenterY },
+      { x: routeX, y: targetCenterY }
+    ]);
+  }
+
+  const sourceToTargetGap = targetLayout.x - sourceRight;
+  const targetToSourceGap = sourceLayout.x - targetRight;
+  const horizontalGap = sourceToTargetGap >= 0 ? sourceToTargetGap : targetToSourceGap;
+
+  if (horizontalGap >= 70 && Math.abs(sourceCenterY - targetCenterY) < 20) {
+    return [];
+  }
+
+  const routeX = sourceToTargetGap >= 0
+    ? roundedGrid(sourceRight + Math.max(50, sourceToTargetGap / 2))
+    : roundedGrid(targetRight + Math.max(50, targetToSourceGap / 2));
+
+  return compactWaypoints([
+    { x: routeX, y: sourceCenterY },
+    { x: routeX, y: targetCenterY }
+  ]);
+}
+
 function renderArchitectureXml(spec) {
   const grouped = spec.groups.length > 0;
-  const groupWidth = 280;
-  const groupGap = 36;
+  const groupGap = 96;
   const startX = 50;
   const startY = 70;
-  const componentWidth = 210;
-  const componentHeight = 78;
-  const rowGap = 116;
+  const groupHeader = 52;
+  const groupPaddingX = 32;
+  const groupPaddingBottom = 36;
+  const componentGapY = 58;
   const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
   const layouts = new Map();
   const c4 = spec.diagramType === 'c4';
@@ -1264,60 +1630,121 @@ function renderArchitectureXml(spec) {
       byGroup.get(group).push(component);
     });
 
-    const maxRows = Math.max(2, ...Array.from(byGroup.values()).map((items) => items.length));
-    const groupHeight = 34 + maxRows * rowGap + 44;
+    const groupModels = spec.groups.map((group) => {
+      const items = byGroup.get(group.id) || [];
+      const componentSizes = items.map(architectureComponentSize);
+      const maxComponentWidth = Math.max(220, ...componentSizes.map((size) => size.width));
+      const labelWidth = labelSize(group.label, {
+        minWidth: 180,
+        maxWidth: 360,
+        minHeight: 34,
+        fontSize: 14,
+        lineHeight: 22,
+        paddingX: 24,
+        paddingY: 8
+      }).width;
+      const width = Math.max(320, maxComponentWidth + groupPaddingX * 2, labelWidth + 48);
+      const contentHeight = componentSizes.reduce((sum, size) => sum + size.height, 0) +
+        Math.max(0, componentSizes.length - 1) * componentGapY;
+      const height = Math.max(320, groupHeader + 24 + contentHeight + groupPaddingBottom);
 
-    spec.groups.forEach((group, groupIndex) => {
+      return { group, items, componentSizes, width, height };
+    });
+    const maxGroupHeight = Math.max(320, ...groupModels.map((model) => model.height));
+    let groupX = startX;
+
+    groupModels.forEach((model, groupIndex) => {
+      const { group } = model;
       const groupCellId = `ai_group_${group.id}`;
-      const groupX = startX + groupIndex * (groupWidth + groupGap);
-      const groupStyle = `swimlane;startSize=34;html=1;whiteSpace=wrap;rounded=0;strokeWidth=2;fontStyle=1;fontSize=14;fontFamily=${FONT};fillColor=#f7faf9;strokeColor=#9fb3ad;`;
       cells.push([
-        `<mxCell id="${escapeXml(groupCellId)}" value="${escapeXml(group.label)}" style="${escapeXml(groupStyle)}" vertex="1" parent="1">`,
-        `<mxGeometry x="${groupX}" y="${startY}" width="${groupWidth}" height="${groupHeight}" as="geometry"/>`,
+        `<mxCell id="${escapeXml(groupCellId)}" value="" style="${escapeXml(architectureGroupContainerStyle(c4))}" vertex="1" parent="1">`,
+        `<mxGeometry x="${groupX}" y="${startY}" width="${model.width}" height="${maxGroupHeight}" as="geometry"/>`,
+        '</mxCell>',
+        `<mxCell id="${escapeXml(groupCellId)}_label" value="${escapeXml(group.label)}" style="${escapeXml(architectureGroupLabelStyle(c4))}" vertex="1" parent="${escapeXml(groupCellId)}">`,
+        `<mxGeometry x="18" y="12" width="${model.width - 36}" height="${groupHeader - 18}" as="geometry"/>`,
         '</mxCell>'
       ].join(''));
 
-      (byGroup.get(group.id) || []).forEach((component, rowIndex) => {
+      let componentY = groupHeader + 24;
+
+      model.items.forEach((component, rowIndex) => {
+        const size = model.componentSizes[rowIndex];
         const cellId = `ai_component_${component.id}`;
-        const x = (groupWidth - componentWidth) / 2;
-        const y = 64 + rowIndex * rowGap;
-        const label = component.description ? `${component.label}&#xa;${component.description}` : component.label;
+        const x = (model.width - size.width) / 2;
+        const y = componentY;
+        const label = architectureComponentLabel(component);
         layouts.set(component.id, {
           cellId,
           x: groupX + x,
           y: startY + y,
-          width: componentWidth,
-          height: componentHeight,
+          width: size.width,
+          height: size.height,
           lane: groupIndex,
+          groupIndex,
           index: spec.components.findIndex((item) => item.id === component.id)
         });
         cells.push([
           `<mxCell id="${escapeXml(cellId)}" value="${escapeXml(label)}" style="${escapeXml(componentStyle(component.type, c4))}" vertex="1" parent="${escapeXml(groupCellId)}">`,
-          `<mxGeometry x="${x}" y="${y}" width="${componentWidth}" height="${componentHeight}" as="geometry"/>`,
+          `<mxGeometry x="${x}" y="${y}" width="${size.width}" height="${size.height}" as="geometry"/>`,
           '</mxCell>'
         ].join(''));
+        componentY += size.height + componentGapY;
       });
+
+      groupX += model.width + groupGap;
     });
 
     spec.connections.forEach((connection, index) => appendArchitectureEdge(cells, connection, index, layouts));
 
-    const pageWidth = Math.max(900, startX * 2 + spec.groups.length * groupWidth + Math.max(0, spec.groups.length - 1) * groupGap);
-    const pageHeight = Math.max(700, startY + groupHeight + 80);
+    const pageWidth = Math.max(900, groupX - groupGap + startX);
+    const pageHeight = Math.max(700, startY + maxGroupHeight + 80);
     return graphModel(cells, pageWidth, pageHeight);
   }
 
   const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(spec.components.length))));
+  const componentSizes = spec.components.map(architectureComponentSize);
+  const columnWidths = [];
+  const rowHeights = [];
+
+  componentSizes.forEach((size, index) => {
+    const col = index % columns;
+    const row = Math.floor(index / columns);
+    columnWidths[col] = Math.max(columnWidths[col] || 0, size.width);
+    rowHeights[row] = Math.max(rowHeights[row] || 0, size.height);
+  });
+
+  function columnLeft(col) {
+    let x = startX;
+
+    for (let index = 0; index < col; index += 1) {
+      x += columnWidths[index] + 110;
+    }
+
+    return x;
+  }
+
+  function rowTop(row) {
+    let y = startY;
+
+    for (let index = 0; index < row; index += 1) {
+      y += rowHeights[index] + 90;
+    }
+
+    return y;
+  }
+
   spec.components.forEach((component, index) => {
     const col = index % columns;
     const row = Math.floor(index / columns);
-    const x = startX + col * (componentWidth + 90);
-    const y = startY + row * rowGap;
+    const size = componentSizes[index];
+    const x = columnLeft(col) + (columnWidths[col] - size.width) / 2;
+    const y = rowTop(row);
     const cellId = `ai_component_${component.id}`;
-    const label = component.description ? `${component.label}&#xa;${component.description}` : component.label;
-    layouts.set(component.id, { cellId, x, y, width: componentWidth, height: componentHeight, lane: col, index });
+    const label = architectureComponentLabel(component);
+    layouts.set(component.id, { cellId, x, y, width: size.width, height: size.height, lane: col, groupIndex: col, index });
     cells.push([
       `<mxCell id="${escapeXml(cellId)}" value="${escapeXml(label)}" style="${escapeXml(componentStyle(component.type, c4))}" vertex="1" parent="1">`,
-      `<mxGeometry x="${x}" y="${y}" width="${componentWidth}" height="${componentHeight}" as="geometry"/>`,
+      `<mxGeometry x="${x}" y="${y}" width="${size.width}" height="${size.height}" as="geometry"/>`,
       '</mxCell>'
     ].join(''));
   });
@@ -1325,8 +1752,8 @@ function renderArchitectureXml(spec) {
   spec.connections.forEach((connection, index) => appendArchitectureEdge(cells, connection, index, layouts));
 
   const rows = Math.ceil(spec.components.length / columns);
-  const pageWidth = Math.max(900, startX * 2 + columns * componentWidth + (columns - 1) * 90);
-  const pageHeight = Math.max(700, startY * 2 + rows * rowGap);
+  const pageWidth = Math.max(900, startX * 2 + columnWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, columns - 1) * 110);
+  const pageHeight = Math.max(700, startY * 2 + rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rows - 1) * 90);
   return graphModel(cells, pageWidth, pageHeight);
 }
 
@@ -1338,10 +1765,9 @@ function appendArchitectureEdge(cells, connection, index, layouts) {
     return;
   }
 
-  const style = `edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=blockThin;endFill=1;fontSize=11;fontFamily=${FONT};fontColor=#404040;strokeColor=#828282;labelBackgroundColor=#ffffff;`;
   cells.push([
-    `<mxCell id="ai_arch_edge_${index + 1}" value="${escapeXml(connection.label)}" style="${escapeXml(style)}" edge="1" parent="1" source="${escapeXml(source.cellId)}" target="${escapeXml(target.cellId)}">`,
-    edgeGeometryXml(edgeWaypoints(source, target)),
+    `<mxCell id="ai_arch_edge_${index + 1}" value="${escapeXml(connection.label)}" style="${escapeXml(architectureEdgeStyle(source, target))}" edge="1" parent="1" source="${escapeXml(source.cellId)}" target="${escapeXml(target.cellId)}">`,
+    edgeGeometryXml(architectureEdgeWaypoints(source, target, index), { x: 0, y: -18 - (index % 3) * 8 }),
     '</mxCell>'
   ].join(''));
 }

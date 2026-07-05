@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>个人信息 - 公司画图工具</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/company.css?v=profile-page-20260705">
+</head>
+<body class="profile-page">
+  <div class="shell profile-shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/images/drawlogo.svg" alt="">
+        <div>
+          <h1>个人信息</h1>
+          <div id="whoami" class="subtle"></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="appButton" type="button"><span class="btn-icon" aria-hidden="true">↩</span><span>工作台</span></button>
+        <button id="adminButton" class="hidden" type="button"><span class="btn-icon" aria-hidden="true">管</span><span>账号管理</span></button>
+        <button id="logoutButton" type="button"><span class="btn-icon" aria-hidden="true">↪</span><span>退出</span></button>
+      </div>
+    </header>
+
+    <main class="content profile-content">
+      <section class="profile-hero" aria-label="账号身份">
+        <div class="profile-badge">
+          <span id="profileInitials">--</span>
+        </div>
+        <div class="profile-identity">
+          <span class="eyebrow">员工档案</span>
+          <h2 id="profileDisplayName">工号</h2>
+          <p id="profileMeta">正在读取账号信息</p>
+        </div>
+        <div class="profile-session">
+          <span>会话有效期</span>
+          <strong id="sessionExpires">-</strong>
+        </div>
+      </section>
+
+      <section class="profile-grid">
+        <section class="panel profile-form-panel">
+          <div class="panel-header">
+            <h2>资料</h2>
+            <div id="profileStatus" class="status"></div>
+          </div>
+          <form id="profileForm" class="profile-form">
+            <label class="field" for="profileName">
+              <span class="field-label">姓名</span>
+              <input id="profileName" name="name" maxlength="40" autocomplete="name" placeholder="例如：张三">
+            </label>
+            <div class="profile-form-actions">
+              <button id="saveProfileButton" class="primary" type="submit"><span class="btn-icon" aria-hidden="true">✓</span><span>保存资料</span></button>
+              <button id="clearProfileButton" type="button"><span class="btn-icon" aria-hidden="true">×</span><span>清空姓名</span></button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel profile-summary-panel">
+          <div class="panel-header">
+            <h2>工作台</h2>
+            <button id="refreshProfileButton" type="button"><span class="btn-icon" aria-hidden="true">↻</span><span>刷新</span></button>
+          </div>
+          <div class="profile-stats" aria-label="工作台概览">
+            <div class="profile-stat">
+              <span>图纸</span>
+              <strong id="fileCount">0</strong>
+            </div>
+            <div class="profile-stat">
+              <span>文件夹</span>
+              <strong id="folderCount">0</strong>
+            </div>
+            <div class="profile-stat">
+              <span>AI 提供商</span>
+              <strong id="providerCount">0</strong>
+            </div>
+          </div>
+          <dl class="profile-detail-list">
+            <div>
+              <dt>工号</dt>
+              <dd id="employeeIdValue">-</dd>
+            </div>
+            <div>
+              <dt>角色</dt>
+              <dd id="roleValue">-</dd>
+            </div>
+            <div>
+              <dt>显示名</dt>
+              <dd id="displayNameValue">-</dd>
+            </div>
+          </dl>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/dialog.js"></script>
+  <script>
+    (function () {
+      var whoami = document.getElementById('whoami');
+      var profileInitials = document.getElementById('profileInitials');
+      var profileDisplayName = document.getElementById('profileDisplayName');
+      var profileMeta = document.getElementById('profileMeta');
+      var sessionExpires = document.getElementById('sessionExpires');
+      var profileStatus = document.getElementById('profileStatus');
+      var profileForm = document.getElementById('profileForm');
+      var profileName = document.getElementById('profileName');
+      var saveProfileButton = document.getElementById('saveProfileButton');
+      var clearProfileButton = document.getElementById('clearProfileButton');
+      var refreshProfileButton = document.getElementById('refreshProfileButton');
+      var appButton = document.getElementById('appButton');
+      var adminButton = document.getElementById('adminButton');
+      var logoutButton = document.getElementById('logoutButton');
+      var fileCount = document.getElementById('fileCount');
+      var folderCount = document.getElementById('folderCount');
+      var providerCount = document.getElementById('providerCount');
+      var employeeIdValue = document.getElementById('employeeIdValue');
+      var roleValue = document.getElementById('roleValue');
+      var displayNameValue = document.getElementById('displayNameValue');
+      var session = null;
+
+      function notify(message, tone) {
+        if (window.CompanyToast) {
+          CompanyToast.show({ message: message, tone: tone || 'ok' });
+        }
+      }
+
+      function setStatus(text, tone) {
+        profileStatus.textContent = text || '';
+        profileStatus.className = 'status' + (tone ? ' ' + tone : '');
+      }
+
+      function api(path, options) {
+        return fetch(path, Object.assign({
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }
+        }, options || {})).then(function (res) {
+          if (res.status === 401) {
+            window.location.replace('/login.html?next=' + encodeURIComponent('/profile.html'));
+            return Promise.reject({ error: 'not_authenticated' });
+          }
+
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw body;
+            }
+
+            return body;
+          });
+        });
+      }
+
+      function formatDate(value) {
+        if (!value) {
+          return '-';
+        }
+
+        return new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        }).format(new Date(value));
+      }
+
+      function roleLabel(role) {
+        return role === 'admin' ? '管理员' : '普通用户';
+      }
+
+      function initials(value) {
+        var text = String(value || '').trim();
+
+        if (!text) {
+          return '--';
+        }
+
+        return Array.from(text).slice(0, 2).join('').toUpperCase();
+      }
+
+      function updateProfileView(profile) {
+        var displayName = profile.displayName || profile.name || profile.employeeId || '';
+        var employeeId = profile.employeeId || session && session.employeeId || '';
+
+        profileName.value = profile.name || '';
+        profileInitials.textContent = initials(displayName || employeeId);
+        profileDisplayName.textContent = displayName || '工号 ' + employeeId;
+        profileMeta.textContent = employeeId ? '工号 ' + employeeId : '';
+        whoami.textContent = profile.name ? displayName + ' · 工号 ' + employeeId : '工号 ' + employeeId;
+        employeeIdValue.textContent = employeeId || '-';
+        displayNameValue.textContent = displayName || '-';
+      }
+
+      function updateSessionView(nextSession) {
+        session = nextSession || session || {};
+        adminButton.classList.toggle('hidden', !session.canAdmin);
+        roleValue.textContent = roleLabel(session.role);
+        sessionExpires.textContent = formatDate(session.expiresAt);
+        updateProfileView(session);
+      }
+
+      function loadProfile() {
+        setStatus('正在读取');
+        refreshProfileButton.disabled = true;
+
+        return api('/api/me')
+          .then(function (body) {
+            if (!body.authenticated) {
+              window.location.replace('/login.html?next=' + encodeURIComponent('/profile.html'));
+              return Promise.reject({ error: 'not_authenticated' });
+            }
+
+            updateSessionView(body);
+
+            return Promise.all([
+              api('/api/profile'),
+              api('/api/files').catch(function () { return { files: [] }; }),
+              api('/api/folders').catch(function () { return { folders: [] }; }),
+              api('/api/ai/providers').catch(function () { return { providers: [] }; })
+            ]);
+          })
+          .then(function (results) {
+            var profile = results[0].profile || {};
+            updateProfileView(Object.assign({}, session, profile));
+            fileCount.textContent = (results[1].files || []).length;
+            folderCount.textContent = (results[2].folders || []).length;
+            providerCount.textContent = (results[3].providers || []).length;
+            setStatus('已同步', 'ok');
+          })
+          .catch(function (err) {
+            if (!err || err.error !== 'not_authenticated') {
+              setStatus('读取失败', 'error');
+              notify('个人信息读取失败，请稍后重试。', 'error');
+            }
+          })
+          .finally(function () {
+            refreshProfileButton.disabled = false;
+          });
+      }
+
+      function saveProfile(name) {
+        saveProfileButton.disabled = true;
+        clearProfileButton.disabled = true;
+        setStatus('正在保存');
+
+        api('/api/profile', {
+          method: 'PUT',
+          body: JSON.stringify({ name: name })
+        })
+          .then(function (body) {
+            session = Object.assign({}, session, body.profile || {});
+            updateProfileView(session);
+            setStatus('已保存', 'ok');
+            notify(name ? '资料已保存。' : '姓名已清空。', 'ok');
+          })
+          .catch(function () {
+            setStatus('保存失败', 'error');
+            notify('资料保存失败，请稍后重试。', 'error');
+          })
+          .finally(function () {
+            saveProfileButton.disabled = false;
+            clearProfileButton.disabled = false;
+          });
+      }
+
+      profileForm.addEventListener('submit', function (evt) {
+        evt.preventDefault();
+        saveProfile(profileName.value.trim());
+      });
+
+      clearProfileButton.addEventListener('click', function () {
+        profileName.value = '';
+        saveProfile('');
+      });
+
+      refreshProfileButton.addEventListener('click', loadProfile);
+      appButton.addEventListener('click', function () {
+        window.location.href = '/app.html';
+      });
+      adminButton.addEventListener('click', function () {
+        window.location.href = '/admin.html';
+      });
+      logoutButton.addEventListener('click', function () {
+        api('/api/logout', { method: 'POST', body: JSON.stringify({}) })
+          .finally(function () {
+            window.location.replace('/login.html');
+          });
+      });
+
+      loadProfile();
+    }());
+  </script>
+</body>
+</html>

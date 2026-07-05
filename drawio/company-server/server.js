@@ -40,6 +40,10 @@ const MAX_AI_PROMPT_CHARS = Number(process.env.DRAWIO_AI_MAX_PROMPT_CHARS || 400
 const MAX_CHAT_MESSAGE_CHARS = Number(process.env.DRAWIO_MAX_CHAT_MESSAGE_CHARS || 2000);
 const MAX_PROFILE_NAME_CHARS = Number(process.env.DRAWIO_MAX_PROFILE_NAME_CHARS || 40);
 const MAX_INTERNAL_SHARE_RECIPIENTS = Number(process.env.DRAWIO_MAX_INTERNAL_SHARE_RECIPIENTS || 30);
+const MAX_AI_PROVIDER_NAME_CHARS = Number(process.env.DRAWIO_MAX_AI_PROVIDER_NAME_CHARS || 60);
+const MAX_AI_PROVIDERS = Number(process.env.DRAWIO_MAX_AI_PROVIDERS || 20);
+const MAX_AI_API_KEY_CHARS = Number(process.env.DRAWIO_MAX_AI_API_KEY_CHARS || 4096);
+const MAX_AI_MODEL_CHARS = Number(process.env.DRAWIO_MAX_AI_MODEL_CHARS || 160);
 const MIN_PASSWORD_CHARS = Number(process.env.DRAWIO_MIN_PASSWORD_CHARS || 6);
 const MAX_BATCH_ACCOUNTS = Number(process.env.DRAWIO_MAX_BATCH_ACCOUNTS || 100);
 const INVITE_CODE_BYTES = Number(process.env.DRAWIO_INVITE_CODE_BYTES || 9);
@@ -370,6 +374,267 @@ async function writeEmployeeProfile(employeeId, name) {
   }, null, 2));
 
   return profile;
+}
+
+function employeeAiProvidersPath(employeeId) {
+  return path.join(employeeBaseDir(employeeId), 'ai-providers.json');
+}
+
+function sanitizeAiProviderName(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_AI_PROVIDER_NAME_CHARS);
+}
+
+function sanitizeAiProviderModel(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_AI_MODEL_CHARS);
+}
+
+function defaultAiProviderName(format, model) {
+  if (model) {
+    return model;
+  }
+
+  return format === 'anthropic' ? 'Anthropic' : 'OpenAI';
+}
+
+function aiProviderSummary(provider) {
+  return {
+    id: provider.id,
+    name: provider.name,
+    providerFormat: provider.providerFormat,
+    baseUrl: provider.baseUrl,
+    model: provider.model,
+    temperature: String(provider.temperature),
+    maxTokens: String(provider.maxTokens),
+    hasApiKey: Boolean(provider.apiKey),
+    createdAt: provider.createdAt,
+    updatedAt: provider.updatedAt
+  };
+}
+
+function normalizeAiProviderRecord(row) {
+  if (!row || typeof row !== 'object' || !isValidFileId(row.id)) {
+    return null;
+  }
+
+  try {
+    const providerFormat = normalizeAiFormat(row.providerFormat || row.format || row.provider || 'openai');
+    const model = sanitizeAiProviderModel(row.model);
+    const baseUrl = normalizeAiBaseUrl(row.baseUrl || defaultAiBaseUrl(providerFormat), providerFormat);
+    const apiKey = String(row.apiKey || '').trim().slice(0, MAX_AI_API_KEY_CHARS);
+    const name = sanitizeAiProviderName(row.name) || defaultAiProviderName(providerFormat, model);
+    const now = nowIso();
+
+    return {
+      id: row.id,
+      name,
+      providerFormat,
+      baseUrl,
+      model,
+      apiKey,
+      temperature: clampNumber(row.temperature, 0, 1, 0.2),
+      maxTokens: clampNumber(row.maxTokens, 800, 8000, 2200),
+      createdAt: typeof row.createdAt === 'string' ? row.createdAt : now,
+      updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : now
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function readAiProviderStore(employeeId) {
+  if (!isValidEmployeeId(employeeId)) {
+    throw publicError(400, 'invalid_employee_id', 'Employee ID is invalid.');
+  }
+
+  await ensureEmployeeDirs(employeeId);
+
+  try {
+    const raw = await fsp.readFile(employeeAiProvidersPath(employeeId), 'utf8');
+    const parsed = JSON.parse(raw);
+    const providers = (Array.isArray(parsed && parsed.providers) ? parsed.providers : [])
+      .map(normalizeAiProviderRecord)
+      .filter(Boolean)
+      .slice(0, MAX_AI_PROVIDERS);
+    const providerIds = new Set(providers.map((provider) => provider.id));
+    const selectedProviderId = providerIds.has(parsed && parsed.selectedProviderId) ? parsed.selectedProviderId : '';
+
+    return { selectedProviderId, providers };
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  return { selectedProviderId: '', providers: [] };
+}
+
+async function writeAiProviderStore(employeeId, store) {
+  if (!isValidEmployeeId(employeeId)) {
+    throw publicError(400, 'invalid_employee_id', 'Employee ID is invalid.');
+  }
+
+  const providers = (store.providers || []).map(normalizeAiProviderRecord).filter(Boolean);
+  const providerIds = new Set(providers.map((provider) => provider.id));
+  const selectedProviderId = providerIds.has(store.selectedProviderId) ? store.selectedProviderId : '';
+
+  await ensureEmployeeDirs(employeeId);
+  await atomicWrite(employeeAiProvidersPath(employeeId), JSON.stringify({
+    savedAt: nowIso(),
+    employeeId,
+    selectedProviderId,
+    providers
+  }, null, 2));
+
+  return { selectedProviderId, providers };
+}
+
+function normalizeAiProviderPayload(input, existing = null) {
+  const payload = input && typeof input === 'object' ? input : {};
+  const existingFormat = existing && existing.providerFormat ? existing.providerFormat : 'openai';
+  const providerFormat = normalizeAiFormat(payload.providerFormat || payload.format || payload.provider || existingFormat);
+  const baseUrlInput = Object.prototype.hasOwnProperty.call(payload, 'baseUrl') ?
+    payload.baseUrl :
+    existing ? existing.baseUrl : defaultAiBaseUrl(providerFormat);
+  const baseUrl = normalizeAiBaseUrl(baseUrlInput || defaultAiBaseUrl(providerFormat), providerFormat);
+  const modelInput = Object.prototype.hasOwnProperty.call(payload, 'model') ? payload.model : existing && existing.model;
+  const model = sanitizeAiProviderModel(modelInput);
+  const nameInput = Object.prototype.hasOwnProperty.call(payload, 'name') ? payload.name : existing && existing.name;
+  const name = sanitizeAiProviderName(nameInput) || defaultAiProviderName(providerFormat, model);
+  let apiKey = existing && existing.apiKey ? existing.apiKey : '';
+
+  if (payload.clearApiKey === true) {
+    apiKey = '';
+  } else if (Object.prototype.hasOwnProperty.call(payload, 'apiKey')) {
+    const nextApiKey = String(payload.apiKey || '').trim();
+
+    if (nextApiKey) {
+      apiKey = nextApiKey;
+    } else if (!existing) {
+      apiKey = '';
+    }
+  }
+
+  if (apiKey.length > MAX_AI_API_KEY_CHARS) {
+    throw publicError(413, 'ai_api_key_too_large', 'AI API key is too long.');
+  }
+
+  const now = nowIso();
+
+  return {
+    id: existing && existing.id ? existing.id : crypto.randomUUID(),
+    name,
+    providerFormat,
+    baseUrl,
+    model,
+    apiKey,
+    temperature: clampNumber(
+      Object.prototype.hasOwnProperty.call(payload, 'temperature') ? payload.temperature : existing ? existing.temperature : undefined,
+      0,
+      1,
+      0.2
+    ),
+    maxTokens: clampNumber(
+      Object.prototype.hasOwnProperty.call(payload, 'maxTokens') ? payload.maxTokens : existing ? existing.maxTokens : undefined,
+      800,
+      8000,
+      2200
+    ),
+    createdAt: existing && existing.createdAt ? existing.createdAt : now,
+    updatedAt: now
+  };
+}
+
+async function createAiProvider(employeeId, input) {
+  const store = await readAiProviderStore(employeeId);
+
+  if (store.providers.length >= MAX_AI_PROVIDERS) {
+    throw publicError(400, 'too_many_ai_providers', 'Too many AI providers.');
+  }
+
+  const provider = normalizeAiProviderPayload(input);
+  store.providers.push(provider);
+  store.selectedProviderId = provider.id;
+  await writeAiProviderStore(employeeId, store);
+
+  return provider;
+}
+
+async function updateAiProvider(employeeId, providerId, input) {
+  const store = await readAiProviderStore(employeeId);
+  const index = store.providers.findIndex((provider) => provider.id === providerId);
+
+  if (index < 0) {
+    throw publicError(404, 'ai_provider_not_found', 'AI provider was not found.');
+  }
+
+  const provider = normalizeAiProviderPayload(input, store.providers[index]);
+  store.providers[index] = provider;
+  await writeAiProviderStore(employeeId, store);
+
+  return provider;
+}
+
+async function deleteAiProvider(employeeId, providerId) {
+  const store = await readAiProviderStore(employeeId);
+  const nextProviders = store.providers.filter((provider) => provider.id !== providerId);
+
+  if (nextProviders.length === store.providers.length) {
+    throw publicError(404, 'ai_provider_not_found', 'AI provider was not found.');
+  }
+
+  store.providers = nextProviders;
+
+  if (store.selectedProviderId === providerId) {
+    store.selectedProviderId = nextProviders[0] ? nextProviders[0].id : '';
+  }
+
+  return writeAiProviderStore(employeeId, store);
+}
+
+async function selectAiProvider(employeeId, providerId) {
+  const store = await readAiProviderStore(employeeId);
+  const nextProviderId = String(providerId || '').trim();
+
+  if (nextProviderId && !store.providers.some((provider) => provider.id === nextProviderId)) {
+    throw publicError(404, 'ai_provider_not_found', 'AI provider was not found.');
+  }
+
+  store.selectedProviderId = nextProviderId;
+  return writeAiProviderStore(employeeId, store);
+}
+
+async function mergeAiConfigWithSavedProvider(employeeId, input) {
+  const config = input && typeof input === 'object' ? { ...input } : {};
+  const providerId = String(config.providerId || '').trim();
+
+  if (!providerId) {
+    return config;
+  }
+
+  const store = await readAiProviderStore(employeeId);
+  const provider = store.providers.find((row) => row.id === providerId);
+
+  if (!provider) {
+    throw publicError(404, 'ai_provider_not_found', 'AI provider was not found.');
+  }
+
+  return {
+    providerFormat: String(config.providerFormat || '').trim() || provider.providerFormat,
+    baseUrl: String(config.baseUrl || '').trim() || provider.baseUrl,
+    model: String(config.model || '').trim() || provider.model,
+    apiKey: String(config.apiKey || '').trim() || provider.apiKey,
+    temperature: config.temperature != null && String(config.temperature).trim() !== '' ? config.temperature : provider.temperature,
+    maxTokens: config.maxTokens != null && String(config.maxTokens).trim() !== '' ? config.maxTokens : provider.maxTokens,
+    providerId
+  };
 }
 
 async function loadEmployeeProfiles(employeeIds) {
@@ -2683,7 +2948,8 @@ async function handleAiDiagram(req, res, session, defaultDiagramType = 'flowchar
     }
 
     const diagramType = normalizeDiagramType(payload.diagramType || defaultDiagramType);
-    const config = normalizeAiConfig(payload.config || {});
+    const configInput = await mergeAiConfigWithSavedProvider(session.employeeId, payload.config || {});
+    const config = normalizeAiConfig(configInput);
     const aiText = await requestAiDiagram(prompt, diagramType, config);
     const rawSpec = parseAiJsonObject(aiText);
     const spec = normalizeDiagramSpec(rawSpec, prompt, diagramType);
@@ -2719,7 +2985,7 @@ async function handleAiFlowchart(req, res, session) {
   await handleAiDiagram(req, res, session, 'flowchart');
 }
 
-async function handleAiModels(req, res) {
+async function handleAiModels(req, res, session) {
   if (req.method !== 'POST') {
     methodNotAllowed(res, 'POST');
     return;
@@ -2735,7 +3001,8 @@ async function handleAiModels(req, res) {
   }
 
   try {
-    const config = normalizeAiConfig(payload.config || {}, { requireModel: false });
+    const configInput = await mergeAiConfigWithSavedProvider(session.employeeId, payload.config || {});
+    const config = normalizeAiConfig(configInput, { requireModel: false });
     const models = await requestAiModels(config);
 
     if (!models.length) {
@@ -2754,6 +3021,102 @@ async function handleAiModels(req, res) {
       error: err.code || 'internal_server_error',
       message: err.publicMessage || 'Unable to load AI models.',
       providerStatus: err.providerStatus || null
+    });
+  }
+}
+
+async function handleAiProviders(req, res, session) {
+  try {
+    if (req.method === 'GET') {
+      const store = await readAiProviderStore(session.employeeId);
+
+      sendJson(res, 200, {
+        selectedProviderId: store.selectedProviderId,
+        providers: store.providers.map(aiProviderSummary)
+      });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      const payload = await readJsonBody(req);
+      const provider = await createAiProvider(session.employeeId, payload.provider || payload);
+      const store = await readAiProviderStore(session.employeeId);
+
+      sendJson(res, 201, {
+        selectedProviderId: store.selectedProviderId,
+        provider: aiProviderSummary(provider),
+        providers: store.providers.map(aiProviderSummary)
+      });
+      return;
+    }
+
+    methodNotAllowed(res, 'GET, POST');
+  } catch (err) {
+    sendJson(res, err.status || 500, {
+      error: err.code || 'internal_server_error',
+      message: err.publicMessage || 'Unable to manage AI providers.'
+    });
+  }
+}
+
+async function handleAiProviderSelection(req, res, session) {
+  if (req.method !== 'PUT') {
+    methodNotAllowed(res, 'PUT');
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(req);
+    const store = await selectAiProvider(session.employeeId, payload.providerId);
+
+    sendJson(res, 200, {
+      selectedProviderId: store.selectedProviderId,
+      providers: store.providers.map(aiProviderSummary)
+    });
+  } catch (err) {
+    sendJson(res, err.status || 500, {
+      error: err.code || 'internal_server_error',
+      message: err.publicMessage || 'Unable to select AI provider.'
+    });
+  }
+}
+
+async function handleAiProviderItem(req, res, session, providerId) {
+  if (!isValidFileId(providerId)) {
+    sendJson(res, 400, { error: 'invalid_ai_provider_id' });
+    return;
+  }
+
+  try {
+    if (req.method === 'PUT') {
+      const payload = await readJsonBody(req);
+      const provider = await updateAiProvider(session.employeeId, providerId, payload.provider || payload);
+      const store = await readAiProviderStore(session.employeeId);
+
+      sendJson(res, 200, {
+        selectedProviderId: store.selectedProviderId,
+        provider: aiProviderSummary(provider),
+        providers: store.providers.map(aiProviderSummary)
+      });
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      const store = await deleteAiProvider(session.employeeId, providerId);
+
+      sendJson(res, 200, {
+        deleted: true,
+        selectedProviderId: store.selectedProviderId,
+        providers: store.providers.map(aiProviderSummary)
+      });
+      return;
+    }
+
+    methodNotAllowed(res, 'PUT, DELETE');
+  } catch (err) {
+    sendJson(res, err.status || 500, {
+      error: err.code || 'internal_server_error',
+      message: err.publicMessage || 'Unable to manage AI provider.'
     });
   }
 }
@@ -3241,6 +3604,7 @@ function publicPagePath(pathname) {
     pathname === '/login.html' ||
     pathname === '/register.html' ||
     pathname === '/app.html' ||
+    pathname === '/profile.html' ||
     pathname === '/admin.html' ||
     pathname === '/editor.html' ||
     pathname === '/share.html'
@@ -3786,7 +4150,24 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === '/api/ai/models') {
-    await handleAiModels(req, res);
+    await handleAiModels(req, res, session);
+    return;
+  }
+
+  if (pathname === '/api/ai/providers') {
+    await handleAiProviders(req, res, session);
+    return;
+  }
+
+  if (pathname === '/api/ai/providers/selection') {
+    await handleAiProviderSelection(req, res, session);
+    return;
+  }
+
+  const aiProviderMatch = pathname.match(/^\/api\/ai\/providers\/([^/]+)$/);
+
+  if (aiProviderMatch) {
+    await handleAiProviderItem(req, res, session, aiProviderMatch[1]);
     return;
   }
 

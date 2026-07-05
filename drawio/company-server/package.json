@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check scripts/status.js && node --check scripts/backup-data.js && node --check scripts/check-html.js && node scripts/check-html.js",
-    "test": "node --test server.test.js",
+    "test": "node --test server.test.js diagram-skill.test.js",
     "status": "node scripts/status.js",
     "backup": "node scripts/backup-data.js"
   },
