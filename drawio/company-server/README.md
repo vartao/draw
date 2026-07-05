@@ -65,7 +65,8 @@ New-NetFirewallRule -DisplayName "Company Draw.io 8081" -Direction Inbound -Acti
 - Etag conflict detection for concurrent saves.
 - Read-only share token API and `/share.html` viewer page.
 - XML download for owner and share visitor.
-- AI flowchart assistant with OpenAI-compatible and Anthropic Messages API formats.
+- Built-in AI diagram assistant for flowcharts, swimlanes, UML sequence/class diagrams, ER diagrams and architecture diagrams.
+- AI model access through OpenAI-compatible and Anthropic Messages API formats.
 - AI model list loading for OpenAI-compatible and Anthropic model endpoints.
 - Internal employee-to-employee sharing with per-diagram chat threads.
 
@@ -107,7 +108,8 @@ GET /api/share/:token/download
 GET /api/health
 GET /api/ops/status
 
-POST /api/ai/flowchart
+POST /api/ai/diagram
+POST /api/ai/flowchart  (legacy flowchart-compatible alias)
 POST /api/ai/models
 
 POST /export
@@ -192,7 +194,7 @@ data/
 | `DRAWIO_AI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` | unset | Anthropic Messages API key |
 | `DRAWIO_AI_ANTHROPIC_MODEL` / `ANTHROPIC_MODEL` | unset | Anthropic model name |
 | `DRAWIO_AI_ANTHROPIC_BASE_URL` / `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | Anthropic Messages base URL |
-| `DRAWIO_AI_MAX_PROMPT_CHARS` | `4000` | maximum prompt length for flowchart generation |
+| `DRAWIO_AI_MAX_PROMPT_CHARS` | `4000` | maximum prompt length for AI diagram generation |
 | `DRAWIO_AI_TIMEOUT_MS` | `45000` | upstream AI request timeout |
 | `DRAWIO_AI_MAX_TOKENS` | `2200` | default AI output token budget |
 | `DRAWIO_AI_TEMPERATURE` | `0.2` | default AI sampling temperature |

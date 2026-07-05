@@ -104,7 +104,7 @@
     </main>
   </div>
 
-  <button id="aiEntryButton" class="ai-entry" type="button" aria-label="打开 AI 流程图助手">
+  <button id="aiEntryButton" class="ai-entry" type="button" aria-label="打开 AI 图表助手">
     <span aria-hidden="true">AI</span>
   </button>
 
@@ -114,24 +114,41 @@
         <div class="ai-title-block">
           <div class="ai-mark" aria-hidden="true">AI</div>
           <div>
-            <h2 id="aiAssistantTitle">AI 流程图助手</h2>
-            <p>输入业务过程，生成可编辑 draw.io 图纸。</p>
+            <h2 id="aiAssistantTitle">AI 图表助手</h2>
+            <p>生成可编辑 draw.io 图纸，支持流程图、泳道图、UML、ER 和架构图。</p>
           </div>
         </div>
-        <button id="aiCloseButton" class="ai-icon-button" type="button" aria-label="关闭 AI 流程图助手">×</button>
+        <button id="aiCloseButton" class="ai-icon-button" type="button" aria-label="关闭 AI 图表助手">×</button>
       </header>
 
       <div class="ai-panel-body">
-        <section class="ai-workbench" aria-label="生成流程图">
+        <section class="ai-workbench" aria-label="生成图表">
+          <label class="ai-field">
+            <span>图表类型</span>
+            <select id="aiDiagramType">
+              <option value="flowchart">流程图</option>
+              <option value="swimlane">泳道图</option>
+              <option value="sequence">UML 时序图</option>
+              <option value="uml_class">UML 类图</option>
+              <option value="erd">ER 图</option>
+              <option value="architecture">架构图</option>
+              <option value="c4">C4 架构图</option>
+              <option value="general">通用关系图</option>
+            </select>
+          </label>
+
           <label class="ai-field">
             <span>提示词</span>
-            <textarea id="aiPrompt" rows="8" maxlength="4000" placeholder="例如：为请假审批设计流程，从员工提交申请开始，主管审批后同步人事，驳回时通知员工修改。"></textarea>
+            <textarea id="aiPrompt" rows="8" maxlength="4000" placeholder="例如：为请假审批设计泳道图，包含员工提交、主管审批、人事备案、驳回修改和通知员工。"></textarea>
           </label>
 
           <div class="ai-prompt-bank" aria-label="提示词示例">
-            <button type="button" data-ai-example="设计一个采购申请审批流程，包含提交申请、预算校验、部门负责人审批、财务复核、采购执行和归档。">采购审批</button>
-            <button type="button" data-ai-example="生成客户售后工单处理流程，包含受理、分派、处理、客户确认、关闭和升级分支。">售后工单</button>
-            <button type="button" data-ai-example="设计软件发布流程，包含需求冻结、开发完成、测试、灰度发布、监控、回滚判断和正式发布。">软件发布</button>
+            <button type="button" data-ai-type="flowchart" data-ai-example="设计一个采购申请审批流程，包含提交申请、预算校验、部门负责人审批、财务复核、采购执行和归档。">采购流程</button>
+            <button type="button" data-ai-type="swimlane" data-ai-example="生成客户售后工单泳道图，泳道包含客户、客服、技术支持、主管，流程包含受理、分派、处理、升级、客户确认和关闭。">售后泳道</button>
+            <button type="button" data-ai-type="sequence" data-ai-example="生成用户登录的 UML 时序图，参与者包括用户、前端、认证服务、用户数据库，包含提交账号密码、校验、返回 token 和失败提示。">登录时序</button>
+            <button type="button" data-ai-type="uml_class" data-ai-example="生成订单系统 UML 类图，包含 User、Order、OrderItem、Product、Payment，标出关键属性、方法和组合/关联关系。">订单类图</button>
+            <button type="button" data-ai-type="erd" data-ai-example="生成文件管理系统 ER 图，实体包含 employees、files、folders、shares、sessions，标出主键、外键和关系。">文件 ER</button>
+            <button type="button" data-ai-type="architecture" data-ai-example="生成公司内部 draw.io 工具架构图，包含浏览器、公司服务、draw.io 静态资源、员工数据目录、分享访问、AI 模型接口和导出服务。">系统架构</button>
           </div>
 
           <div class="ai-actions">
@@ -253,6 +270,7 @@
       var aiAssistant = document.getElementById('aiAssistant');
       var aiCloseButton = document.getElementById('aiCloseButton');
       var aiPrompt = document.getElementById('aiPrompt');
+      var aiDiagramType = document.getElementById('aiDiagramType');
       var aiGenerateButton = document.getElementById('aiGenerateButton');
       var aiStatus = document.getElementById('aiStatus');
       var aiProviderFormat = document.getElementById('aiProviderFormat');
@@ -849,7 +867,8 @@
           model: (aiModel.value || aiModelSelect.value).trim(),
           apiKey: aiApiKey.value.trim(),
           temperature: aiTemperature.value,
-          maxTokens: aiMaxTokens.value
+          maxTokens: aiMaxTokens.value,
+          diagramType: aiDiagramType.value
         };
       }
 
@@ -860,7 +879,8 @@
           model: '',
           apiKey: '',
           temperature: '0.2',
-          maxTokens: '2200'
+          maxTokens: '2200',
+          diagramType: 'flowchart'
         };
 
         try {
@@ -870,6 +890,7 @@
         }
 
         aiProviderFormat.value = config.providerFormat === 'anthropic' ? 'anthropic' : 'openai';
+        aiDiagramType.value = config.diagramType || 'flowchart';
         aiBaseUrl.value = config.baseUrl || providerDefaultBaseUrl(aiProviderFormat.value);
         aiModel.value = config.model || '';
         resetAiModelOptions('填写 Base URL 和 API Key 后加载', config.model || '');
@@ -986,7 +1007,7 @@
           ai_provider_error: safeMessage || '模型接口返回错误，请检查 Base URL、API Key 和模型名。',
           ai_provider_non_json: '模型接口返回了网页而不是 JSON，请检查 Base URL 是否是 API 地址。',
           ai_models_empty: '没有从接口加载到可用模型，可手动填写模型名。',
-          ai_response_not_json: '模型返回内容不是可解析的流程图结构。',
+          ai_response_not_json: '模型返回内容不是可解析的图表结构。',
           ai_invalid_response: '模型返回内容不完整。'
         };
 
@@ -1015,21 +1036,22 @@
         return aiErrorText(err);
       }
 
-      function diagramNameFromTitle(title) {
-        var name = String(title || 'AI 流程图')
+      function diagramNameFromTitle(title, typeLabel) {
+        var name = String(title || ('AI ' + (typeLabel || '图表')))
           .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
           .replace(/\s+/g, ' ')
           .trim();
 
         if (!name) {
-          name = 'AI 流程图';
+          name = 'AI ' + (typeLabel || '图表');
         }
 
         return /\.drawio$/i.test(name) ? name : name + '.drawio';
       }
 
-      function generateFlowchart() {
+      function generateDiagram() {
         var prompt = aiPrompt.value.trim();
+        var diagramType = aiDiagramType.value || 'flowchart';
 
         if (!prompt) {
           setAiStatus('请先输入提示词', 'error');
@@ -1039,12 +1061,13 @@
 
         aiGenerateButton.disabled = true;
         persistAiConfig();
-        setAiStatus('正在生成流程结构');
+        setAiStatus('正在生成图表结构');
 
-        api('/api/ai/flowchart', {
+        api('/api/ai/diagram', {
           method: 'POST',
           body: JSON.stringify({
             prompt: prompt,
+            diagramType: diagramType,
             config: collectAiConfig()
           })
         })
@@ -1053,7 +1076,7 @@
             return api('/api/files', {
               method: 'POST',
               body: JSON.stringify({
-                name: diagramNameFromTitle(body.diagram && body.diagram.title),
+                name: diagramNameFromTitle(body.diagram && body.diagram.title, body.diagram && body.diagram.typeLabel),
                 xml: body.xml,
                 folderId: currentFolderId
               })
@@ -1061,7 +1084,7 @@
           })
           .then(function (body) {
             setAiStatus('已生成，正在打开', 'ok');
-            notify('AI 流程图已生成。', 'ok');
+            notify('AI 图表已生成。', 'ok');
             window.location.href = '/editor.html?id=' + encodeURIComponent(body.file.id);
           })
           .catch(function (err) {
@@ -1666,6 +1689,7 @@
         scheduleAiConfigSave();
       });
 
+      aiDiagramType.addEventListener('change', scheduleAiConfigSave);
       aiBaseUrl.addEventListener('input', markAiModelsStale);
       aiApiKey.addEventListener('input', markAiModelsStale);
       aiModelSelect.addEventListener('change', function () {
@@ -1680,8 +1704,13 @@
 
       Array.prototype.forEach.call(document.querySelectorAll('[data-ai-example]'), function (button) {
         button.addEventListener('click', function () {
+          var type = button.getAttribute('data-ai-type');
+          if (type) {
+            aiDiagramType.value = type;
+          }
           aiPrompt.value = button.getAttribute('data-ai-example') || '';
           aiPrompt.focus();
+          scheduleAiConfigSave();
         });
       });
 
@@ -1740,7 +1769,7 @@
       aiToolbarButton.addEventListener('click', openAiPanel);
       aiEntryButton.addEventListener('click', openAiPanel);
       aiCloseButton.addEventListener('click', closeAiPanel);
-      aiGenerateButton.addEventListener('click', generateFlowchart);
+      aiGenerateButton.addEventListener('click', generateDiagram);
       aiLoadModelsButton.addEventListener('click', loadAiModels);
       aiSaveConfigButton.addEventListener('click', saveAiConfig);
       aiAssistant.addEventListener('mousedown', function (evt) {

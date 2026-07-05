@@ -308,6 +308,65 @@ test('company API supports login, file isolation, save conflicts and share links
       return;
     }
 
+    if (req.url === '/swimlane/chat/completions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                title: 'Leave approval lanes',
+                diagramType: 'swimlane',
+                lanes: [
+                  { id: 'employee', label: 'Employee' },
+                  { id: 'manager', label: 'Manager' },
+                  { id: 'hr', label: 'HR' }
+                ],
+                nodes: [
+                  { id: 'submit', label: 'Submit leave request', type: 'start', lane: 'employee' },
+                  { id: 'review', label: 'Review request', type: 'decision', lane: 'manager' },
+                  { id: 'record', label: 'Record leave', type: 'process', lane: 'hr' },
+                  { id: 'notify', label: 'Notify result', type: 'end', lane: 'employee' }
+                ],
+                edges: [
+                  { from: 'submit', to: 'review' },
+                  { from: 'review', to: 'record', label: 'approved' },
+                  { from: 'record', to: 'notify' }
+                ]
+              })
+            }
+          }
+        ]
+      }));
+      return;
+    }
+
+    if (req.url === '/uml/chat/completions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                title: 'Order classes',
+                diagramType: 'uml_class',
+                classes: [
+                  { id: 'order', name: 'Order', attributes: ['id: string', 'status: string'], methods: ['submit(): void'] },
+                  { id: 'item', name: 'OrderItem', attributes: ['quantity: number'], methods: ['subtotal(): money'] },
+                  { id: 'product', name: 'Product', attributes: ['sku: string'], methods: ['reserve(): void'] }
+                ],
+                relations: [
+                  { from: 'order', to: 'item', type: 'composition', label: 'contains' },
+                  { from: 'item', to: 'product', type: 'association', label: 'references' }
+                ]
+              })
+            }
+          }
+        ]
+      }));
+      return;
+    }
+
     if (req.url === '/anthropic/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -429,6 +488,57 @@ test('company API supports login, file isolation, save conflicts and share links
   assert.match(result.body.xml, /dashed=1/);
   assert.match(result.body.xml, /<Array as="points">/);
   assert.equal(aiRequests.at(-1).url, '/branch/chat/completions');
+
+  result = await request('/api/ai/diagram', {
+    method: 'POST',
+    body: JSON.stringify({
+      prompt: 'Create a leave approval swimlane diagram',
+      diagramType: 'swimlane',
+      config: {
+        providerFormat: 'openai',
+        baseUrl: `http://127.0.0.1:${aiPort}/swimlane`,
+        apiKey: 'openai-test-key',
+        model: 'test-openai-model'
+      }
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.diagram.type, 'swimlane');
+  assert.equal(result.body.diagram.typeLabel, '泳道图');
+  assert.match(result.body.xml, /ai_lane_employee/);
+  assert.match(result.body.xml, /Submit leave request/);
+  const recordGeometry = result.body.xml.match(/value="Record leave"[\s\S]*?<mxGeometry x="([^"]+)" y="([^"]+)"/);
+  assert.ok(recordGeometry);
+  assert.equal(Number(recordGeometry[2]), 366);
+  const swimlaneEdge = result.body.xml.match(/id="ai_edge_2"[\s\S]*?<\/mxCell>/);
+  assert.ok(swimlaneEdge);
+  assert.match(swimlaneEdge[0], /exitX=0\.5;exitY=1/);
+  assert.deepEqual(
+    Array.from(swimlaneEdge[0].matchAll(/<mxPoint x="[^"]+" y="([^"]+)"/g), (match) => Number(match[1])),
+    [410, 410]
+  );
+  assert.match(aiRequests.at(-1).body.messages[1].content, /"diagramType" to "swimlane"/);
+
+  result = await request('/api/ai/diagram', {
+    method: 'POST',
+    body: JSON.stringify({
+      prompt: 'Create an order UML class diagram',
+      diagramType: 'uml_class',
+      config: {
+        providerFormat: 'openai',
+        baseUrl: `http://127.0.0.1:${aiPort}/uml`,
+        apiKey: 'openai-test-key',
+        model: 'test-openai-model'
+      }
+    })
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(result.body.diagram.type, 'uml_class');
+  assert.equal(result.body.diagram.nodeCount, 3);
+  assert.match(result.body.xml, /ai_class_order/);
+  assert.match(result.body.xml, /OrderItem/);
+  assert.match(result.body.xml, /diamondThin/);
+  assert.match(aiRequests.at(-1).body.messages[1].content, /"diagramType" to "uml_class"/);
 
   result = await request('/api/ai/flowchart', {
     method: 'POST',

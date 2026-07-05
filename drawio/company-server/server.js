@@ -5,6 +5,14 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const {
+  buildDiagramInstruction,
+  diagramMetrics,
+  diagramTypeLabel,
+  normalizeDiagramSpec,
+  normalizeDiagramType,
+  renderDiagramXml
+} = require('./lib/diagram-skill');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const WEBAPP_DIR = path.resolve(process.env.DRAWIO_WEBAPP_DIR || path.join(ROOT_DIR, 'src', 'main', 'webapp'));
@@ -2161,7 +2169,7 @@ function textFromContentParts(content) {
   return '';
 }
 
-async function requestOpenAiFlowchart(prompt, config) {
+async function requestOpenAiDiagram(prompt, diagramType, config) {
   const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'chat/completions'), {
     method: 'POST',
     headers: {
@@ -2176,11 +2184,11 @@ async function requestOpenAiFlowchart(prompt, config) {
       messages: [
         {
           role: 'system',
-          content: 'You convert user requirements into clean flowchart JSON for draw.io. Return valid JSON only.'
+          content: 'You convert user requirements into clean structured diagram JSON for draw.io. Return valid JSON only.'
         },
         {
           role: 'user',
-          content: buildFlowchartInstruction(prompt)
+          content: buildDiagramInstruction(prompt, diagramType)
         }
       ]
     })
@@ -2196,7 +2204,7 @@ async function requestOpenAiFlowchart(prompt, config) {
   return content;
 }
 
-async function requestAnthropicFlowchart(prompt, config) {
+async function requestAnthropicDiagram(prompt, diagramType, config) {
   const upstream = await fetchAiProvider(aiEndpoint(config.baseUrl, 'messages'), {
     method: 'POST',
     headers: {
@@ -2209,11 +2217,11 @@ async function requestAnthropicFlowchart(prompt, config) {
       model: config.model,
       max_tokens: config.maxTokens,
       temperature: config.temperature,
-      system: 'You convert user requirements into clean flowchart JSON for draw.io. Return valid JSON only.',
+      system: 'You convert user requirements into clean structured diagram JSON for draw.io. Return valid JSON only.',
       messages: [
         {
           role: 'user',
-          content: buildFlowchartInstruction(prompt)
+          content: buildDiagramInstruction(prompt, diagramType)
         }
       ]
     })
@@ -2261,12 +2269,12 @@ async function requestAiModels(config) {
   return requestOpenAiModels(config);
 }
 
-async function requestAiFlowchart(prompt, config) {
+async function requestAiDiagram(prompt, diagramType, config) {
   if (config.format === 'anthropic') {
-    return requestAnthropicFlowchart(prompt, config);
+    return requestAnthropicDiagram(prompt, diagramType, config);
   }
 
-  return requestOpenAiFlowchart(prompt, config);
+  return requestOpenAiDiagram(prompt, diagramType, config);
 }
 
 function parseAiJsonObject(text) {
@@ -2648,7 +2656,7 @@ function renderFlowchartXml(spec) {
   ].join('');
 }
 
-async function handleAiFlowchart(req, res, session) {
+async function handleAiDiagram(req, res, session, defaultDiagramType = 'flowchart') {
   if (req.method !== 'POST') {
     methodNotAllowed(res, 'POST');
     return;
@@ -2674,17 +2682,21 @@ async function handleAiFlowchart(req, res, session) {
       throw publicError(413, 'prompt_too_large', 'Prompt is too long.');
     }
 
+    const diagramType = normalizeDiagramType(payload.diagramType || defaultDiagramType);
     const config = normalizeAiConfig(payload.config || {});
-    const aiText = await requestAiFlowchart(prompt, config);
+    const aiText = await requestAiDiagram(prompt, diagramType, config);
     const rawSpec = parseAiJsonObject(aiText);
-    const spec = normalizeFlowchartSpec(rawSpec, prompt);
-    const xml = renderFlowchartXml(spec);
+    const spec = normalizeDiagramSpec(rawSpec, prompt, diagramType);
+    const metrics = diagramMetrics(spec);
+    const xml = renderDiagramXml(spec);
 
     sendJson(res, 200, {
       diagram: {
         title: spec.title,
-        nodeCount: spec.nodes.length,
-        edgeCount: spec.edges.length
+        type: spec.diagramType,
+        typeLabel: diagramTypeLabel(spec.diagramType),
+        nodeCount: metrics.nodeCount,
+        edgeCount: metrics.edgeCount
       },
       provider: {
         format: config.format,
@@ -2697,10 +2709,14 @@ async function handleAiFlowchart(req, res, session) {
   } catch (err) {
     sendJson(res, err.status || 500, {
       error: err.code || 'internal_server_error',
-      message: err.publicMessage || 'Unable to generate flowchart.',
+      message: err.publicMessage || 'Unable to generate diagram.',
       providerStatus: err.providerStatus || null
     });
   }
+}
+
+async function handleAiFlowchart(req, res, session) {
+  await handleAiDiagram(req, res, session, 'flowchart');
 }
 
 async function handleAiModels(req, res) {
@@ -3756,6 +3772,11 @@ async function handleApi(req, res, pathname) {
     }
 
     await handleAdminAccountItem(req, res, session, adminAccountMatch[1], adminAccountMatch[2] || null);
+    return;
+  }
+
+  if (pathname === '/api/ai/diagram') {
+    await handleAiDiagram(req, res, session);
     return;
   }
 
