@@ -336,6 +336,27 @@ table {
 
 .file-table {
   min-width: 980px;
+  table-layout: fixed;
+}
+
+.file-table th:nth-child(2),
+.file-table td:nth-child(2) {
+  width: 64px;
+}
+
+.file-table th:nth-child(3),
+.file-table td:nth-child(3) {
+  width: 136px;
+}
+
+.file-table th:nth-child(4),
+.file-table td:nth-child(4) {
+  width: 76px;
+}
+
+.file-table th:nth-child(5),
+.file-table td:nth-child(5) {
+  width: 510px;
 }
 
 th,
@@ -363,22 +384,34 @@ tbody tr:hover {
 }
 
 td.name-cell {
-  width: 100%;
-  min-width: 240px;
-  white-space: normal;
-  word-break: break-word;
+  min-width: 0;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
-td.name-cell strong {
+td.name-cell .name-content {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+td.name-cell .name-text {
+  min-width: 0;
+  overflow: hidden;
   color: var(--ink);
   font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 td.name-cell .item-kind {
   display: inline-flex;
   width: 22px;
   justify-content: center;
-  margin-right: 4px;
 }
 
 .row-actions {
